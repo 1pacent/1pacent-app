@@ -9,16 +9,51 @@ class N8nWebhookService {
 
   final http.Client _client;
 
+  /// Creates a new rental work order via n8n.
   Future<Map<String, dynamic>> createWorkOrder(Map<String, dynamic> payload) {
     return _post(AppConfig.createJobWebhook, payload);
   }
 
+  /// Fetches the current status of a job from n8n.
   Future<Map<String, dynamic>> fetchJobStatus(Map<String, dynamic> payload) {
     return _post(AppConfig.jobStatusWebhook, payload);
   }
 
+  /// Sends a message to Sally via n8n.
   Future<Map<String, dynamic>> sendSallyMessage(Map<String, dynamic> payload) {
     return _post(AppConfig.sallyChatWebhook, payload);
+  }
+
+  /// Fetches matched quotes for a job.
+  ///
+  /// [jobId] is the work order identifier.
+  /// Returns a map with a 'quotes' list.
+  Future<Map<String, dynamic>> fetchQuotes(String jobId) {
+    return _post(AppConfig.quotesWebhook, {'job_id': jobId});
+  }
+
+  /// Fetches landlord approval state for a job.
+  ///
+  /// [jobId] is the work order identifier.
+  /// Returns a map with 'status' (pending/approved/rejected) and optional 'message'.
+  Future<Map<String, dynamic>> fetchLandlordApproval(String jobId) {
+    return _post(AppConfig.landlordApprovalWebhook, {'job_id': jobId});
+  }
+
+  /// Submits a warranty review request to Sparky via n8n.
+  ///
+  /// [payload] should contain job_id and optional flag details.
+  Future<Map<String, dynamic>> submitWarrantyReview(Map<String, dynamic> payload) {
+    return _post(AppConfig.warrantyReviewWebhook, payload);
+  }
+
+  /// Fetches the trust passport data for a tradie.
+  ///
+  /// [tradieId] is the tradie identifier.
+  /// Returns licence, insurance, reviews, completed jobs, warranty terms,
+  /// evidence quality, and tenant feedback score.
+  Future<Map<String, dynamic>> fetchTrustPassport(String tradieId) {
+    return _post(AppConfig.trustPassportWebhook, {'tradie_id': tradieId});
   }
 
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> payload) async {

@@ -4,6 +4,8 @@ import '../../features/auth/login_screen.dart';
 import '../../features/customer/customer_home_screen.dart';
 import '../../features/jobs/job_status_screen.dart';
 import '../../features/jobs/start_job_screen.dart';
+import '../../features/landlord/landlord_approval_screen.dart';
+import '../../features/quotes/quote_list_screen.dart';
 import '../../features/sally_chat/sally_chat_screen.dart';
 import '../../features/tradie/tradie_home_screen.dart';
 import '../../features/trust_passport/tradie_trust_passport_screen.dart';
@@ -18,6 +20,14 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/job/:jobId',
       builder: (context, state) => JobStatusScreen(jobId: state.pathParameters['jobId'] ?? ''),
+    ),
+    GoRoute(
+      path: '/quotes/:jobId',
+      builder: (context, state) => QuoteListScreen(jobId: state.pathParameters['jobId'] ?? ''),
+    ),
+    GoRoute(
+      path: '/landlord/approval/:jobId',
+      builder: (context, state) => LandlordApprovalScreen(jobId: state.pathParameters['jobId'] ?? ''),
     ),
     GoRoute(path: '/tradie', builder: (context, state) => const TradieHomeScreen()),
     GoRoute(
