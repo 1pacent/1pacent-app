@@ -23,6 +23,12 @@ class AppConfig {
   static String get submitQuoteWebhook => _value('N8N_SUBMIT_QUOTE_WEBHOOK', '/webhook/submit-quote');
   static String get fetchNotificationsWebhook => _value('N8N_FETCH_NOTIFICATIONS_WEBHOOK', '/webhook/notifications');
   static String get markNotificationsReadWebhook => _value('N8N_MARK_NOTIFICATIONS_READ_WEBHOOK', '/webhook/notifications/read');
+  static String get authLoginWebhook => _value('N8N_AUTH_LOGIN_WEBHOOK', '/webhook/auth/login');
+  static String get authRegisterWebhook => _value('N8N_AUTH_REGISTER_WEBHOOK', '/webhook/auth/register');
+  static String get authRefreshWebhook => _value('N8N_AUTH_REFRESH_WEBHOOK', '/webhook/auth/refresh');
+  static String get uploadPhotoWebhook => _value('N8N_UPLOAD_PHOTO_WEBHOOK', '/webhook/upload-photo');
+  static String get nominatimSearchUrl => _value('NOMINATIM_SEARCH_URL', 'https://nominatim.openstreetmap.org/search');
+  static String get nominatimReverseUrl => _value('NOMINATIM_REVERSE_URL', 'https://nominatim.openstreetmap.org/reverse');
   static String get elevenLabsAgentId => _value('ELEVENLABS_AGENT_ID', 'agent_4601krtt5j3xf26ac865kpe19yvp');
 
   static String _value(String key, String fallback) {

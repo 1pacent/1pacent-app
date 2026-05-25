@@ -195,6 +195,55 @@ class N8nWebhookService {
     return _post(AppConfig.markNotificationsReadWebhook, params);
   }
 
+  /// Authenticates a user and returns tokens.
+  Future<Map<String, dynamic>> authLogin({
+    required String email,
+    required String password,
+  }) {
+    return _post(AppConfig.authLoginWebhook, {
+      'email': email,
+      'password': password,
+    });
+  }
+
+  /// Registers a new user account.
+  Future<Map<String, dynamic>> authRegister({
+    required String email,
+    required String password,
+    required String name,
+  }) {
+    return _post(AppConfig.authRegisterWebhook, {
+      'email': email,
+      'password': password,
+      'name': name,
+    });
+  }
+
+  /// Refreshes an expired access token.
+  Future<Map<String, dynamic>> authRefresh({required String refreshToken}) {
+    return _post(AppConfig.authRefreshWebhook, {
+      'refresh_token': refreshToken,
+    });
+  }
+
+  /// Uploads a photo and returns the stored URL.
+  Future<Map<String, dynamic>> uploadPhoto({
+    required String jobId,
+    required List<int> imageBytes,
+    required String fileName,
+  }) {
+    return _post(AppConfig.uploadPhotoWebhook, {
+      'job_id': jobId,
+      'image_base64': imageBytes,
+      'file_name': fileName,
+    });
+  }
+
+  /// Fetches jobs for a property manager's portfolio.
+  Future<Map<String, dynamic>> pmFetchJobs(Map<String, dynamic> params) {
+    return _post('/webhook/pm/jobs', params);
+  }
+
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> payload) async {
     final uri = Uri.parse('${AppConfig.n8nBaseUrl}$path');
     final response = await _client.post(

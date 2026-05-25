@@ -1,6 +1,7 @@
 import 'package:go_router/go_router.dart';
 
 import '../../features/auth/login_screen.dart';
+import '../../features/auth/register_screen.dart';
 import '../../features/availability/tenant_availability_screen.dart';
 import '../../features/customer/customer_home_screen.dart';
 import '../../features/jobs/invoice_payment_screen.dart';
@@ -9,6 +10,8 @@ import '../../features/jobs/job_status_screen.dart';
 import '../../features/jobs/start_job_screen.dart';
 import '../../features/landlord/landlord_approval_screen.dart';
 import '../../features/notifications/notifications_screen.dart';
+import '../../features/pm/pm_dashboard_screen.dart';
+import '../../features/pm/pm_job_detail_screen.dart';
 import '../../features/quotes/quote_acceptance_screen.dart';
 import '../../features/quotes/quote_list_screen.dart';
 import '../../features/reviews/review_request_screen.dart';
@@ -98,6 +101,20 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/settings',
       builder: (context, state) => const SettingsScreen(),
+    ),
+    GoRoute(
+      path: '/register',
+      builder: (context, state) => const RegisterScreen(),
+    ),
+    GoRoute(
+      path: '/pm/dashboard',
+      builder: (context, state) => const PMDashboardScreen(),
+    ),
+    GoRoute(
+      path: '/pm/job/:jobId',
+      builder: (context, state) => PMJobDetailScreen(
+        jobId: state.pathParameters['jobId'] ?? '',
+      ),
     ),
   ],
 );
