@@ -14,6 +14,10 @@ class AppConfig {
   static String get landlordApprovalWebhook => _value('N8N_LANDLORD_APPROVAL_WEBHOOK', '/webhook/landlord/approval');
   static String get warrantyReviewWebhook => _value('N8N_WARRANTY_REVIEW_WEBHOOK', '/webhook/rental/warranty/review-with-sparky');
   static String get trustPassportWebhook => _value('N8N_TRUST_PASSPORT_WEBHOOK', '/webhook/tradie/trust-passport');
+  static String get acceptQuoteWebhook => _value('N8N_ACCEPT_QUOTE_WEBHOOK', '/webhook/accept-quote');
+  static String get declineQuoteWebhook => _value('N8N_DECLINE_QUOTE_WEBHOOK', '/webhook/decline-quote');
+  static String get initiatePaymentWebhook => _value('N8N_INITIATE_PAYMENT_WEBHOOK', '/webhook/initiate-payment');
+  static String get submitReviewWebhook => _value('N8N_SUBMIT_REVIEW_WEBHOOK', '/webhook/submit-review');
   static String get elevenLabsAgentId => _value('ELEVENLABS_AGENT_ID', 'agent_4601krtt5j3xf26ac865kpe19yvp');
 
   static String _value(String key, String fallback) {

@@ -113,3 +113,37 @@ class Job {
   /// Returns the index of the current status in the timeline.
   int get timelineIndex => jobStatusTimeline.indexOf(status);
 }
+
+/// Extension providing firstOrNull on Iterable.
+extension IterableExtension<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
+}
+
+/// Represents a photo attached to a job (before/after evidence).
+class JobImage {
+  const JobImage({
+    required this.id,
+    required this.jobId,
+    required this.url,
+    required this.photoType,
+    this.caption,
+  });
+
+  final String id;
+  final String jobId;
+  final String url;
+  final String photoType; // 'before' or 'after'
+  final String? caption;
+
+  factory JobImage.fromJson(Map<String, dynamic> json) {
+    return JobImage(
+      id: json['id']?.toString() ?? json['image_id']?.toString() ?? '',
+      jobId: json['job_id']?.toString() ?? '',
+      url: json['url']?.toString() ?? json['image_url']?.toString() ?? '',
+      photoType: json['photo_type']?.toString() ??
+          json['type']?.toString() ??
+          'before',
+      caption: json['caption']?.toString(),
+    );
+  }
+}

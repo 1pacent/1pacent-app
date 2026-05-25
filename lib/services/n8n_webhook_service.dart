@@ -56,6 +56,81 @@ class N8nWebhookService {
     return _post(AppConfig.trustPassportWebhook, {'tradie_id': tradieId});
   }
 
+  /// Accepts a quote for a job.
+  ///
+  /// [quoteId] The quote identifier.
+  /// [jobId] The work order identifier.
+  /// Returns confirmation with updated quote status.
+  Future<Map<String, dynamic>> acceptQuote({
+    required String quoteId,
+    required String jobId,
+  }) {
+    return _post(AppConfig.acceptQuoteWebhook, {
+      'quote_id': quoteId,
+      'job_id': jobId,
+    });
+  }
+
+  /// Declines a quote with a reason.
+  ///
+  /// [quoteId] The quote identifier.
+  /// [jobId] The work order identifier.
+  /// [reason] The reason for declining.
+  /// Returns confirmation with updated quote status.
+  Future<Map<String, dynamic>> declineQuote({
+    required String quoteId,
+    required String jobId,
+    required String reason,
+  }) {
+    return _post(AppConfig.declineQuoteWebhook, {
+      'quote_id': quoteId,
+      'job_id': jobId,
+      'reason': reason,
+    });
+  }
+
+  /// Initiates payment for an invoice.
+  ///
+  /// [jobId] The work order identifier.
+  /// [invoiceId] The invoice identifier.
+  /// [amount] The payment amount.
+  /// Returns payment session details.
+  Future<Map<String, dynamic>> initiatePayment({
+    required String jobId,
+    required String invoiceId,
+    required double amount,
+  }) {
+    return _post(AppConfig.initiatePaymentWebhook, {
+      'job_id': jobId,
+      'invoice_id': invoiceId,
+      'amount': amount,
+    });
+  }
+
+  /// Submits a review for a completed job.
+  ///
+  /// [jobId] The work order identifier.
+  /// [tradieId] The tradie identifier.
+  /// [rating] Star rating 1-5.
+  /// [review] Text review content.
+  /// [photoUrls] Optional attached photo URLs.
+  /// Returns confirmation with review ID.
+  Future<Map<String, dynamic>> submitReview({
+    required String jobId,
+    required String tradieId,
+    required int rating,
+    required String review,
+    List<String>? photoUrls,
+  }) {
+    return _post(AppConfig.submitReviewWebhook, {
+      'job_id': jobId,
+      'tradie_id': tradieId,
+      'rating': rating,
+      'review': review,
+      if (photoUrls != null) 'photo_urls': photoUrls,
+    });
+  }
+
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> payload) async {
     final uri = Uri.parse('${AppConfig.n8nBaseUrl}$path');
     final response = await _client.post(
