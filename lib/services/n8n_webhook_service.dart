@@ -131,6 +131,70 @@ class N8nWebhookService {
     });
   }
 
+  /// Updates the tenant's availability for a job.
+  ///
+  /// [jobId] The work order identifier.
+  /// [slots] List of availability slots with date and period.
+  /// Returns confirmation with saved slots count.
+  Future<Map<String, dynamic>> updateAvailability({
+    required String jobId,
+    required List<Map<String, dynamic>> slots,
+  }) {
+    return _post(AppConfig.updateAvailabilityWebhook, {
+      'job_id': jobId,
+      'slots': slots,
+    });
+  }
+
+  /// Fetches jobs available for a tradie to quote on.
+  ///
+  /// [params] Optional filters (distance, trade_type, etc.).
+  /// Returns map with 'jobs' list.
+  Future<Map<String, dynamic>> fetchTradieJobs(Map<String, dynamic> params) {
+    return _post(AppConfig.tradieJobsWebhook, params);
+  }
+
+  /// Submits a quote for a job.
+  ///
+  /// [jobId] The work order identifier.
+  /// [lineItems] List of line items with description, qty, rate, total.
+  /// [total] The total quote amount.
+  /// [availability] List of availability strings.
+  /// [assumptions] Notes and assumptions.
+  /// Returns quote confirmation with reference number.
+  Future<Map<String, dynamic>> submitQuote({
+    required String jobId,
+    required List<Map<String, dynamic>> lineItems,
+    required double total,
+    required List<String> availability,
+    String? assumptions,
+  }) {
+    return _post(AppConfig.submitQuoteWebhook, {
+      'job_id': jobId,
+      'line_items': lineItems,
+      'total': total,
+      'availability': availability,
+      if (assumptions != null && assumptions.isNotEmpty)
+        'assumptions': assumptions,
+    });
+  }
+
+  /// Fetches notifications for the current user.
+  ///
+  /// [params] Optional filters (limit, offset, etc.).
+  /// Returns map with 'notifications' list.
+  Future<Map<String, dynamic>> fetchNotifications(Map<String, dynamic> params) {
+    return _post(AppConfig.fetchNotificationsWebhook, params);
+  }
+
+  /// Marks all notifications as read.
+  ///
+  /// [params] Optional filters (notification IDs, etc.).
+  /// Returns confirmation.
+  Future<Map<String, dynamic>> markNotificationsRead(Map<String, dynamic> params) {
+    return _post(AppConfig.markNotificationsReadWebhook, params);
+  }
+
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> payload) async {
     final uri = Uri.parse('${AppConfig.n8nBaseUrl}$path');
     final response = await _client.post(

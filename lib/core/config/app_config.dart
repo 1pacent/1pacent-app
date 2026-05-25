@@ -18,6 +18,11 @@ class AppConfig {
   static String get declineQuoteWebhook => _value('N8N_DECLINE_QUOTE_WEBHOOK', '/webhook/decline-quote');
   static String get initiatePaymentWebhook => _value('N8N_INITIATE_PAYMENT_WEBHOOK', '/webhook/initiate-payment');
   static String get submitReviewWebhook => _value('N8N_SUBMIT_REVIEW_WEBHOOK', '/webhook/submit-review');
+  static String get updateAvailabilityWebhook => _value('N8N_UPDATE_AVAILABILITY_WEBHOOK', '/webhook/update-availability');
+  static String get tradieJobsWebhook => _value('N8N_TRADIE_JOBS_WEBHOOK', '/webhook/tradie/jobs');
+  static String get submitQuoteWebhook => _value('N8N_SUBMIT_QUOTE_WEBHOOK', '/webhook/submit-quote');
+  static String get fetchNotificationsWebhook => _value('N8N_FETCH_NOTIFICATIONS_WEBHOOK', '/webhook/notifications');
+  static String get markNotificationsReadWebhook => _value('N8N_MARK_NOTIFICATIONS_READ_WEBHOOK', '/webhook/notifications/read');
   static String get elevenLabsAgentId => _value('ELEVENLABS_AGENT_ID', 'agent_4601krtt5j3xf26ac865kpe19yvp');
 
   static String _value(String key, String fallback) {
