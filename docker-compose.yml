@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  flutter-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: 1pacent-app
+    restart: unless-stopped
+    networks:
+      - n8n_default
+
+networks:
+  n8n_default:
+    external: true
