@@ -5,8 +5,8 @@ class AppConfig {
 
   static String get appBaseUrl => _value('APP_BASE_URL', 'https://app.1pacent.com');
   static String get apiBaseUrl => _value('API_BASE_URL', 'https://api.1pacent.com');
-  static String get n8nBaseUrl => _value('N8N_BASE_URL', 'https://api.1pacent.com');
-  static String get n8nFallbackBaseUrl => _value('N8N_FALLBACK_BASE_URL', 'https://vmi3305336.contaboserver.net');
+  static String get n8nBaseUrl => _value('N8N_BASE_URL', 'http://75.119.151.166');
+  static String get n8nFallbackBaseUrl => _value('N8N_FALLBACK_BASE_URL', 'http://75.119.151.166');
   static String get createJobWebhook => _value('N8N_CREATE_JOB_WEBHOOK', '/webhook/rental/work-orders/intake');
   static String get jobStatusWebhook => _value('N8N_JOB_STATUS_WEBHOOK', '/webhook/customer/job-status');
   static String get sallyChatWebhook => _value('N8N_SALLY_CHAT_WEBHOOK', '/webhook/agents/sally/chat');
