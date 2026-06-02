@@ -29,6 +29,7 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
     ),
   ];
   bool _sending = false;
+  bool _preparingVoice = false;
   String? _error;
 
   @override
@@ -110,6 +111,65 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
     }
   }
 
+  Future<void> _prepareVoiceSession() async {
+    final user = appSession.user;
+    setState(() {
+      _preparingVoice = true;
+      _error = null;
+    });
+
+    try {
+      final response = await _service.fetchSallyConversationToken({
+        'source': 'customer_app',
+        'conversation_id': _conversationId,
+        'agent_id': ElevenLabsConfig.sallyAgentId,
+        'participant_name': user?.name ?? '1pacent customer',
+        'user': {
+          'id': user?.id,
+          'name': user?.name,
+          'email': user?.email,
+          'persona': user?.personaLabel,
+          'property_id': user?.propertyId,
+          'property_scenario': user?.propertyScenario,
+        },
+      });
+      if (!mounted) return;
+
+      final success = response['success'] == true;
+      final token = response['token']?.toString() ??
+          response['conversation_token']?.toString() ??
+          '';
+      final message = success && token.isNotEmpty
+          ? 'Sally voice is authorised. The next build step is starting the WebRTC microphone session with this short-lived token.'
+          : response['message']?.toString() ??
+              'Sally voice token was not returned by the bridge.';
+      setState(() {
+        _messages.add(ConversationMessage(
+          id: 'voice-${DateTime.now().microsecondsSinceEpoch}',
+          conversationId: _conversationId,
+          sender: 'sally',
+          text: message,
+          createdAt: DateTime.now(),
+        ));
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _messages.add(ConversationMessage(
+          id: 'voice-error-${DateTime.now().microsecondsSinceEpoch}',
+          conversationId: _conversationId,
+          sender: 'sally',
+          text:
+              'I could not prepare the voice session yet. Please check the n8n ElevenLabs token bridge and API key.',
+          createdAt: DateTime.now(),
+        ));
+      });
+    } finally {
+      if (mounted) setState(() => _preparingVoice = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = appSession.user;
@@ -145,6 +205,8 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
               controller: _messageController,
               sending: _sending,
               onSend: _sendMessage,
+              preparingVoice: _preparingVoice,
+              onVoice: _prepareVoiceSession,
             ),
           ],
         ),
@@ -253,11 +315,15 @@ class _Composer extends StatelessWidget {
     required this.controller,
     required this.sending,
     required this.onSend,
+    required this.preparingVoice,
+    required this.onVoice,
   });
 
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
+  final bool preparingVoice;
+  final VoidCallback onVoice;
 
   @override
   Widget build(BuildContext context) {
@@ -267,10 +333,15 @@ class _Composer extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
         child: Row(
           children: [
-            const IconButton(
-              tooltip: 'Voice triage pending bridge',
-              onPressed: null,
-              icon: Icon(Icons.mic_none_outlined),
+            IconButton(
+              tooltip: 'Prepare Sally voice',
+              onPressed: preparingVoice ? null : onVoice,
+              icon: preparingVoice
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.mic_none_outlined),
             ),
             Expanded(
               child: TextField(

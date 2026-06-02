@@ -69,6 +69,47 @@ Expected response should include a status key, reference/work order id, descript
 }
 ```
 
+## Sally ElevenLabs voice token
+
+`POST /webhook/agents/sally/conversation-token`
+
+Flutter calls this n8n endpoint before starting a Sally voice session. n8n then
+calls ElevenLabs server-side using `ELEVENLABS_API_KEY`, so the key is never
+exposed in the app or Vercel build output.
+
+```json
+{
+  "source": "customer_app",
+  "conversation_id": "sally-uat-123",
+  "agent_id": "agent_4601krtt5j3xf26ac865kpe19yvp",
+  "participant_name": "UAT Owner",
+  "user": {
+    "id": "OWNER-UAT-001",
+    "name": "UAT Owner",
+    "email": "owner.uat@1pacent.com",
+    "persona": "Owner occupied",
+    "property_id": "PROP-UAT-OWNER-001",
+    "property_scenario": "owner_occupied"
+  }
+}
+```
+
+Expected response:
+
+```json
+{
+  "success": true,
+  "status_key": "voice_token_ready",
+  "conversation_token": "short-lived-token",
+  "agent_id": "agent_4601krtt5j3xf26ac865kpe19yvp",
+  "connection_type": "webrtc",
+  "next_action": "Start the ElevenLabs WebRTC client session with conversation_token."
+}
+```
+
+The n8n deployment script is
+`n8n/deploy/deploy_sally_elevenlabs_voice_bridge.ps1`.
+
 ## Property manager operations summary
 
 `GET /webhook/admin/ops-console/summary?tenant_id=TENANT-001&limit=10`

@@ -17,6 +17,9 @@ class AppConfig {
       _value('N8N_JOB_STATUS_WEBHOOK', '/webhook/customer/job-status');
   static String get sallyChatWebhook =>
       _value('N8N_SALLY_CHAT_WEBHOOK', '/webhook/agents/sally/chat');
+  static String get sallyConversationTokenWebhook => _value(
+      'N8N_SALLY_CONVERSATION_TOKEN_WEBHOOK',
+      '/webhook/agents/sally/conversation-token');
   static String get opsConsoleSummaryWebhook => _value(
       'N8N_OPS_CONSOLE_SUMMARY_WEBHOOK', '/webhook/admin/ops-console/summary');
   static String get rentalQuoteOptionsWebhook => _value(

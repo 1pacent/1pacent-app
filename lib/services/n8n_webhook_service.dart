@@ -25,6 +25,11 @@ class N8nWebhookService {
     return _post(AppConfig.sallyChatWebhook, payload);
   }
 
+  Future<Map<String, dynamic>> fetchSallyConversationToken(
+      Map<String, dynamic> payload) {
+    return _post(AppConfig.sallyConversationTokenWebhook, payload);
+  }
+
   Future<Map<String, dynamic>> fetchOpsConsoleSummary({
     int limit = 10,
     String tenantId = 'TENANT-001',

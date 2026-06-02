@@ -19,9 +19,16 @@ $env:N8N_API_KEY = "..."
 .\n8n\deploy\deploy_rental_property_management_foundation.ps1
 .\n8n\deploy\deploy_customer_job_status.ps1
 .\n8n\deploy\deploy_george_calendar_booking_workflow.ps1
+.\n8n\deploy\deploy_sally_elevenlabs_voice_bridge.ps1
 ```
 
 The deployment scripts upsert workflows by name, activate them, and should keep published n8n workflows aligned with GitHub.
+
+Sally voice requires `ELEVENLABS_API_KEY` to be set on the n8n server
+environment. The Flutter app calls
+`POST /webhook/agents/sally/conversation-token`; n8n uses the server-side key to
+request a short-lived ElevenLabs WebRTC token for the Sally agent. Do not put the
+ElevenLabs API key in Flutter or client-side Vercel environment variables.
 
 ## VPS Database Setup
 
@@ -51,5 +58,6 @@ For the Flutter MVP UAT path, these scripts are currently the most important:
 - `deploy_customer_job_status.ps1`
 - `deploy_george_calendar_booking_workflow.ps1`
 - `deploy_admin_ops_console_summary.ps1`
+- `deploy_sally_elevenlabs_voice_bridge.ps1`
 
 They cover intake, warranty/repeat checks, requester/tradie availability matching, quote options, approval, scheduling, customer job status, and the property-manager operations dashboard.
