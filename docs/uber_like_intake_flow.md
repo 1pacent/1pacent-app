@@ -38,6 +38,30 @@ The Uber-style product model separates the customer app, driver app, admin panel
 | Payment | Invoice and payment request | Penny/payment workflows |
 | Review | Tenant/owner feedback and trust score learning | Tenant feedback and trust score workflows |
 
+## UX Design Principles For Intake
+
+The Uber UX case-study pattern is useful because it focuses on personalisation, clear user flow, low-friction testing, and evidence-based iteration. For 1pacent, the design direction is:
+
+- Personalise the request path from the user's relationship to the property. A tenant, owner-occupier, landlord, PM, tradie, and public customer should not see the same default actions.
+- Ask only for the information needed at the current decision point. Use Sally to progressively gather issue, urgency, warranty clues, access availability, and approval context.
+- Show the next decision clearly. Each step should have one obvious primary action: continue, match options, request this tradie, confirm booking, or track job.
+- Make matching understandable. Quote option cards should explain why they are shown: price, availability overlap, trust score, warranty status, and confidence.
+- Design for exceptions without making the happy path heavy. Examples: no availability overlap, warranty candidate found, low confidence, landlord approval pending, tradie manual acceptance required.
+- Keep UI modules consistent. Reuse the same card, chip, status, and action patterns across customer, tradie, admin, and analytics surfaces.
+- Avoid discriminatory or unsafe matching criteria. Match on trade skill, availability, warranty obligations, licensing/compliance, location/service area, and trust evidence.
+- Test the actual task flow, not just screen appearance. The UAT target is a user reaching a successful booked job with minimal confusion.
+
+## UAT UX Metrics
+
+| Metric | Intake target |
+| --- | --- |
+| Task completion | Owner-occupied user can complete intake, choose an option, and book a job in one guided path. |
+| Decision clarity | Tester can explain why each quote option was offered. |
+| Time to request | Tester can reach quote options without hunting through unrelated persona actions. |
+| Error recovery | Tester understands what happened when warranty, availability, or approval blocks the happy path. |
+| Persona correctness | Tenant cannot approve landlord-owned rental work, while owner/landlord can approve their own relevant options. |
+| Workflow ownership | n8n response data drives quote/status/approval states; Flutter does not invent execution results. |
+
 ## Intake UAT Acceptance Criteria
 
 - Login selects a persona and the app derives the default property path from that persona.
