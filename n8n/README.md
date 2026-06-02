@@ -24,11 +24,12 @@ $env:N8N_API_KEY = "..."
 
 The deployment scripts upsert workflows by name, activate them, and should keep published n8n workflows aligned with GitHub.
 
-Sally voice requires `ELEVENLABS_API_KEY` to be set on the n8n server
-environment. The Flutter app calls
-`POST /webhook/agents/sally/conversation-token`; n8n uses the server-side key to
-request a short-lived ElevenLabs WebRTC token for the Sally agent. Do not put the
-ElevenLabs API key in Flutter or client-side Vercel environment variables.
+Sally voice requires `ELEVENLABS_API_KEY` to be set in the PowerShell deployment
+session before running `deploy_sally_elevenlabs_voice_bridge.ps1`. The Flutter
+app calls `POST /webhook/agents/sally/conversation-token`; n8n uses the deployed
+bridge to request a short-lived ElevenLabs WebRTC token for the Sally agent. Do
+not put the ElevenLabs API key in Flutter or client-side Vercel environment
+variables.
 
 ## VPS Database Setup
 

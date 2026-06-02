@@ -9,7 +9,16 @@ $Headers = @{
     "accept" = "application/json"
 }
 
+$ElevenLabsApiKeyForWorkflow = $env:ELEVENLABS_API_KEY
+$ElevenLabsAgentIdForWorkflow = $env:ELEVENLABS_SALLY_AGENT_ID
+$ElevenLabsEnvironmentForWorkflow = $env:ELEVENLABS_ENVIRONMENT
+
 function New-NodeId { return [guid]::NewGuid().ToString() }
+
+function ConvertTo-JsString($Value) {
+    if (-not $Value) { return "''" }
+    return ($Value | ConvertTo-Json -Compress)
+}
 
 function New-WebhookNode($Name, $Path, $Method, $X, $Y) {
     return @{
@@ -91,12 +100,12 @@ function first(...values) {
   return '';
 }
 
-const apiKey = first(process.env.ELEVENLABS_API_KEY, process.env.XI_API_KEY);
+const apiKey = first('__ELEVENLABS_API_KEY__');
 const agentId = first(
   body.agent_id,
   body.elevenlabs_agent_id,
   body.user?.elevenlabs_agent_id,
-  process.env.ELEVENLABS_SALLY_AGENT_ID,
+  '__ELEVENLABS_SALLY_AGENT_ID__',
   'agent_4601krtt5j3xf26ac865kpe19yvp'
 );
 const participantName = first(
@@ -105,14 +114,14 @@ const participantName = first(
   body.customer?.name,
   '1pacent customer'
 );
-const environment = first(body.environment, process.env.ELEVENLABS_ENVIRONMENT, 'production');
+const environment = first(body.environment, '__ELEVENLABS_ENVIRONMENT__', 'production');
 
 if (!apiKey) {
   return [{
     json: {
       success: false,
       status_key: 'missing_elevenlabs_api_key',
-      message: 'Set ELEVENLABS_API_KEY on the n8n server before requesting Sally voice tokens.',
+      message: 'Redeploy this workflow with ELEVENLABS_API_KEY set so n8n can request Sally voice tokens.',
       agent_id: agentId
     }
   }];
@@ -174,6 +183,10 @@ return [{
 }];
 '@
 
+$tokenCode = $tokenCode.Replace("'__ELEVENLABS_API_KEY__'", (ConvertTo-JsString $ElevenLabsApiKeyForWorkflow))
+$tokenCode = $tokenCode.Replace("'__ELEVENLABS_SALLY_AGENT_ID__'", (ConvertTo-JsString $ElevenLabsAgentIdForWorkflow))
+$tokenCode = $tokenCode.Replace("'__ELEVENLABS_ENVIRONMENT__'", (ConvertTo-JsString $ElevenLabsEnvironmentForWorkflow))
+
 $nodes = @(
     (New-WebhookNode "Sally Conversation Token Webhook" "agents/sally/conversation-token" "POST" 0 0),
     (New-CodeNode "Request ElevenLabs Conversation Token" $tokenCode 300 0),
@@ -190,6 +203,7 @@ $workflow = Upsert-WorkflowByName "TRADIE-SALLY-120-ElevenLabs-Voice-Token" $nod
 @{
     workflow = $workflow | Select-Object name,id,active
     endpoint = "$BaseUrl/webhook/agents/sally/conversation-token"
-    required_server_env = @("ELEVENLABS_API_KEY")
+    required_deploy_env = @("ELEVENLABS_API_KEY")
     agent_id = "agent_4601krtt5j3xf26ac865kpe19yvp"
+    elevenlabs_key_injected = -not [string]::IsNullOrWhiteSpace($ElevenLabsApiKeyForWorkflow)
 } | ConvertTo-Json -Depth 10

@@ -74,8 +74,8 @@ Expected response should include a status key, reference/work order id, descript
 `POST /webhook/agents/sally/conversation-token`
 
 Flutter calls this n8n endpoint before starting a Sally voice session. n8n then
-calls ElevenLabs server-side using `ELEVENLABS_API_KEY`, so the key is never
-exposed in the app or Vercel build output.
+calls ElevenLabs using the key injected into the workflow at deployment time, so
+the key is never exposed in the app or Vercel build output.
 
 ```json
 {
@@ -108,7 +108,8 @@ Expected response:
 ```
 
 The n8n deployment script is
-`n8n/deploy/deploy_sally_elevenlabs_voice_bridge.ps1`.
+`n8n/deploy/deploy_sally_elevenlabs_voice_bridge.ps1`. Set
+`ELEVENLABS_API_KEY` in the PowerShell session before running that script.
 
 ## Property manager operations summary
 
