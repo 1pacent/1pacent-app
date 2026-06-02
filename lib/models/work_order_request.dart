@@ -17,6 +17,11 @@ class WorkOrderRequest {
     this.approvalRecipientRole = 'landlord',
     this.source = 'customer_app',
     this.estimatedAmount,
+    this.agencyId,
+    this.propertyManagerId,
+    this.landlordId,
+    this.tenantId,
+    this.propertyId,
   });
 
   final String source;
@@ -36,6 +41,11 @@ class WorkOrderRequest {
   final bool consentToContact;
   final bool consentToStore;
   final double? estimatedAmount;
+  final String? agencyId;
+  final String? propertyManagerId;
+  final String? landlordId;
+  final String? tenantId;
+  final String? propertyId;
 
   Map<String, dynamic> toJson() {
     return {
@@ -56,6 +66,12 @@ class WorkOrderRequest {
       'property_scenario': propertyScenario,
       'requester_role': requesterRole,
       'approval_recipient_role': approvalRecipientRole,
+      if (_hasValue(agencyId)) 'agency_id': agencyId,
+      if (_hasValue(propertyManagerId))
+        'property_manager_id': propertyManagerId,
+      if (_hasValue(landlordId)) 'landlord_id': landlordId,
+      if (_hasValue(tenantId)) 'tenant_id': tenantId,
+      if (_hasValue(propertyId)) 'property_id': propertyId,
       'requester_availability': requesterAvailability,
       if (propertyScenario == 'rental')
         'tenant_availability': requesterAvailability,
@@ -68,4 +84,6 @@ class WorkOrderRequest {
       if (estimatedAmount != null) 'estimated_amount': estimatedAmount,
     };
   }
+
+  bool _hasValue(String? value) => value != null && value.trim().isNotEmpty;
 }

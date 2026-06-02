@@ -16,6 +16,11 @@ void main() {
       requesterAvailability: ['Monday morning', 'Thursday 2:00 pm to 4:00 pm'],
       consentToContact: true,
       consentToStore: true,
+      agencyId: 'AGENCY-UAT-001',
+      propertyManagerId: 'PM-UAT-001',
+      landlordId: 'LL-UAT-001',
+      tenantId: 'TEN-UAT-001',
+      propertyId: 'PROP-UAT-001',
     );
 
     final json = request.toJson();
@@ -30,6 +35,11 @@ void main() {
     expect(json['quote_matching_requires_availability_overlap'], isTrue);
     expect(json['tenant_availability'], hasLength(2));
     expect(json['requester_availability'], hasLength(2));
+    expect(json['agency_id'], 'AGENCY-UAT-001');
+    expect(json['property_manager_id'], 'PM-UAT-001');
+    expect(json['landlord_id'], 'LL-UAT-001');
+    expect(json['tenant_id'], 'TEN-UAT-001');
+    expect(json['property_id'], 'PROP-UAT-001');
     expect(json['customer'], containsPair('email', 'aussiemacs@gmail.com'));
     expect(json['property'], containsPair('suburb', 'Richmond'));
   });

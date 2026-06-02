@@ -1,16 +1,319 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
-class SallyChatScreen extends StatelessWidget {
+import '../../core/session/app_session.dart';
+import '../../models/conversation_message.dart';
+import '../../services/elevenlabs_config.dart';
+import '../../services/n8n_webhook_service.dart';
+
+class SallyChatScreen extends StatefulWidget {
   const SallyChatScreen({super.key});
 
   @override
+  State<SallyChatScreen> createState() => _SallyChatScreenState();
+}
+
+class _SallyChatScreenState extends State<SallyChatScreen> {
+  final _service = N8nWebhookService();
+  final _messageController = TextEditingController();
+  final _conversationId = 'sally-uat-${DateTime.now().millisecondsSinceEpoch}';
+
+  final List<ConversationMessage> _messages = [
+    ConversationMessage(
+      id: 'welcome',
+      conversationId: 'local',
+      sender: 'sally',
+      text:
+          'Hi, I am Sally. Tell me what happened and I will triage the issue, check warranty, and prepare the right workflow.',
+      createdAt: DateTime.now(),
+    ),
+  ];
+  bool _sending = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendMessage([String? preset]) async {
+    final text = (preset ?? _messageController.text).trim();
+    if (text.isEmpty) return;
+
+    final user = appSession.user;
+    final userMessage = ConversationMessage(
+      id: 'user-${DateTime.now().microsecondsSinceEpoch}',
+      conversationId: _conversationId,
+      sender: 'user',
+      text: text,
+      createdAt: DateTime.now(),
+    );
+
+    setState(() {
+      _messages.add(userMessage);
+      _messageController.clear();
+      _sending = true;
+      _error = null;
+    });
+
+    try {
+      final response = await _service.sendSallyMessage({
+        'source': 'customer_app',
+        'conversation_id': _conversationId,
+        'message': text,
+        'user': {
+          'id': user?.id,
+          'name': user?.name,
+          'email': user?.email,
+          'persona': user?.personaLabel,
+          'property_id': user?.propertyId,
+          'property_scenario': user?.propertyScenario,
+        },
+        'expected_actions': const [
+          'triage_issue',
+          'check_warranty_with_wally',
+          'capture_requester_availability',
+          'prepare_quote_matching',
+        ],
+      });
+      if (!mounted) return;
+
+      final reply = response['reply']?.toString() ??
+          response['message']?.toString() ??
+          response['next_action']?.toString() ??
+          'I have passed that to the workflow and will update the job path next.';
+      setState(() {
+        _messages.add(ConversationMessage(
+          id: 'sally-${DateTime.now().microsecondsSinceEpoch}',
+          conversationId: _conversationId,
+          sender: 'sally',
+          text: reply,
+          createdAt: DateTime.now(),
+        ));
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _messages.add(ConversationMessage(
+          id: 'fallback-${DateTime.now().microsecondsSinceEpoch}',
+          conversationId: _conversationId,
+          sender: 'sally',
+          text:
+              'I could not reach my workflow just now. You can still use guided intake to create the job.',
+          createdAt: DateTime.now(),
+        ));
+      });
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final user = appSession.user;
     return Scaffold(
-      appBar: AppBar(title: const Text('Sally')),
-      body: const Padding(
-        padding: EdgeInsets.all(16),
+      appBar: AppBar(
+        title: const Text('Sally'),
+        actions: [
+          IconButton(
+            tooltip: 'Start guided intake',
+            icon: const Icon(Icons.add_home_work_outlined),
+            onPressed: () => context.go('/start-job'),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            _SallyHeader(user: user),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: _messages.length + (_error == null ? 0 : 1),
+                itemBuilder: (context, index) {
+                  if (_error != null && index == _messages.length) {
+                    return _InlineError(error: _error!);
+                  }
+                  return _MessageBubble(message: _messages[index]);
+                },
+              ),
+            ),
+            _PresetBar(onSelected: _sendMessage),
+            _Composer(
+              controller: _messageController,
+              sending: _sending,
+              onSend: _sendMessage,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SallyHeader extends StatelessWidget {
+  const _SallyHeader({required this.user});
+
+  final AppUser? user;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      color: Theme.of(context).colorScheme.primaryContainer,
+      child: Row(
+        children: [
+          const CircleAvatar(child: Icon(Icons.support_agent_outlined)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Maintenance triage',
+                    style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Text(
+                  '${user?.personaLabel ?? 'Customer'} path. Voice agent: ${ElevenLabsConfig.sallyAgentId}',
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({required this.message});
+
+  final ConversationMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isUser = message.sender == 'user';
+    final colorScheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 420),
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: isUser
+              ? colorScheme.primary
+              : colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
         child: Text(
-            'Sally will support app chat first, then in-app voice via ElevenLabs once the core work-order loop is stable.'),
+          message.text,
+          style: TextStyle(color: isUser ? colorScheme.onPrimary : null),
+        ),
+      ),
+    );
+  }
+}
+
+class _PresetBar extends StatelessWidget {
+  const _PresetBar({required this.onSelected});
+
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    const presets = [
+      'The power is flickering after a previous repair.',
+      'I have a leaking tap and I am available Monday morning.',
+      'Can you check warranty before new quotes?',
+    ];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Row(
+        children: [
+          for (final preset in presets) ...[
+            ActionChip(
+              label: Text(preset),
+              onPressed: () => onSelected(preset),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _Composer extends StatelessWidget {
+  const _Composer({
+    required this.controller,
+    required this.sending,
+    required this.onSend,
+  });
+
+  final TextEditingController controller;
+  final bool sending;
+  final VoidCallback onSend;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 8,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+        child: Row(
+          children: [
+            const IconButton(
+              tooltip: 'Voice triage pending bridge',
+              onPressed: null,
+              icon: Icon(Icons.mic_none_outlined),
+            ),
+            Expanded(
+              child: TextField(
+                controller: controller,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  hintText: 'Message Sally',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => sending ? null : onSend(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              tooltip: 'Send',
+              onPressed: sending ? null : onSend,
+              icon: sending
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.send_outlined),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineError extends StatelessWidget {
+  const _InlineError({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(error),
       ),
     );
   }
