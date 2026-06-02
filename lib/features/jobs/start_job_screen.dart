@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/session/app_session.dart';
 import '../../models/work_order_request.dart';
 import '../../services/n8n_webhook_service.dart';
 
@@ -36,6 +37,18 @@ class _StartJobScreenState extends State<StartJobScreen> {
   bool _submitting = false;
   Map<String, dynamic>? _result;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final user = appSession.user;
+    if (user == null) return;
+
+    _nameController.text = user.name;
+    _emailController.text = user.email;
+    _propertyScenario = user.propertyScenario ??
+        (user.persona == UserPersona.tenant ? 'rental' : 'owner_occupied');
+  }
 
   @override
   void dispose() {

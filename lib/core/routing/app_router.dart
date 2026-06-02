@@ -1,5 +1,6 @@
 import 'package:go_router/go_router.dart';
 
+import '../session/app_session.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/customer/customer_home_screen.dart';
 import '../../features/jobs/job_status_screen.dart';
@@ -12,7 +13,19 @@ import '../../features/tradie/tradie_quote_submit_screen.dart';
 import '../../features/trust_passport/tradie_trust_passport_screen.dart';
 
 final appRouter = GoRouter(
-  initialLocation: '/',
+  initialLocation: '/login',
+  refreshListenable: appSession,
+  redirect: (context, state) {
+    final path = state.uri.path;
+    final isLogin = path == '/login';
+    final isPublicTrackingLink = path == '/job-status';
+
+    if (!appSession.isSignedIn && !isLogin && !isPublicTrackingLink) {
+      return '/login';
+    }
+    if (appSession.isSignedIn && isLogin) return '/';
+    return null;
+  },
   routes: [
     GoRoute(path: '/', builder: (context, state) => const CustomerHomeScreen()),
     GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
