@@ -1,6 +1,8 @@
 # API Contracts
 
-These contracts describe how the Flutter app should call the orchestration layer. The production base URL will move to `https://api.1pacent.com`; during early testing use the VPS fallback URL.
+These contracts describe how the Flutter app calls the orchestration layer. Flutter is a persona-facing GUI only: n8n and Postgres own workflow execution, status transitions, quote matching, approvals, warranty decisions, scheduling, payments, and audit state.
+
+Production base URL: `https://api.1pacent.com`.
 
 ## Create rental work order
 
@@ -9,6 +11,9 @@ These contracts describe how the Flutter app should call the orchestration layer
 ```json
 {
   "source": "customer_app",
+  "property_scenario": "rental",
+  "requester_role": "tenant",
+  "approval_recipient_role": "landlord",
   "agency_id": "AGENCY-DEMO-001",
   "property_id": "PROP-DEMO-002",
   "tenant_id": "TENANT-DEMO-002",
@@ -21,21 +26,35 @@ These contracts describe how the Flutter app should call the orchestration layer
   "tenant_availability": [
     "2026-05-25 09:00-11:00",
     "2026-05-25 13:00-15:00"
-  ]
+  ],
+  "requester_availability": [
+    "2026-05-25 09:00-11:00",
+    "2026-05-25 13:00-15:00"
+  ],
+  "warranty_check_required": true,
+  "quote_matching_requires_availability_overlap": true
 }
 ```
 
 Expected response includes work order id, approval status, warranty/safety guardrails, and next action.
 
+The same endpoint must support `property_scenario: "owner_occupied"` with
+`requester_role: "owner"`, `approval_recipient_role: "owner"`, and
+`owner_availability`. For rentals, the requester may be the tenant and approval
+goes to the landlord. For owner occupied homes, the owner is both requester and
+approver. In both scenarios, n8n should run warranty/repeat-issue/safety checks
+before quote matching and should only present quote options whose tradie windows
+can match the renter/owner availability.
+
 ## Job status
 
-`POST /webhook/customer/job-status`
+`GET /webhook/customer/job-status?work_order_id=WO-2026-000001`
 
-```json
-{
-  "work_order_id": "WO-2026-000001"
-}
-```
+The Flutter tracking route accepts n8n-generated links in the form:
+
+`https://app.1pacent.com/job-status?work_order_id=WO-2026-000001`
+
+Expected response should include a status key, reference/work order id, description, next action, optional landlord approval status, optional scheduled window, and optional warranty/safety guardrails.
 
 ## Sally chat
 
@@ -50,8 +69,75 @@ Expected response includes work order id, approval status, warranty/safety guard
 }
 ```
 
+## Property manager operations summary
+
+`GET /webhook/admin/ops-console/summary?tenant_id=TENANT-001&limit=10`
+
+The Flutter `/pm` route renders the operational queue returned by n8n/Postgres.
+Expected response may be either a root object or an `ops_console` wrapper with
+`generated_at`, `tenant_id`, `pipeline`, `payments`, `scheduling`, `quotes`, and
+`recent_work`.
+
+`recent_work` should contain recent `leads`, `jobs`, and `payments`. Flutter links
+rows into the n8n-backed job status route using `lead_id` or `job_id`; it does
+not own counts, statuses, payment records, quote records, scheduling state, or
+operator decisions.
+
 ## Warranty and electrical SME review
 
 `POST /webhook/rental/warranty/review-with-sparky`
 
 Used by workflows when a rental maintenance issue may be a repeat issue, warranty issue, or electrical safety issue.
+
+## Rental quote options
+
+`POST /webhook/rental/quote-options/generate`
+
+```json
+{
+  "work_order_id": "WO-2026-000001"
+}
+```
+
+Expected response includes `approval_id`, `options`, and `next_action`. Each option should include `option_id`, `quote_amount`, `tradie_id`, optional `company_id`, schedule window, and score fields that n8n/Postgres calculated.
+
+For UAT, the tradie quote submission screen also posts to this endpoint using the workflow's `tradie_options` input. Flutter captures the tradie's proposed price and service window; n8n/Postgres still calculate option ranking, landlord approval records, and next actions.
+
+```json
+{
+  "work_order_id": "WO-2026-000001",
+  "tradie_options": [
+    {
+      "tradie_id": "TRADIE-DEMO-001",
+      "company_id": "COMPANY-DEMO-001",
+      "tradie_name": "Demo Electrician",
+      "amount": 360,
+      "scheduled_start": "2026-06-02T09:00:00",
+      "scheduled_end": "2026-06-02T11:00:00",
+      "source": "tradie_app_quote_submission",
+      "line_items": []
+    }
+  ]
+}
+```
+
+## Approve rental quote option
+
+`POST /webhook/rental/quote-options/approve`
+
+```json
+{
+  "approval_id": "APR-2026-000001",
+  "option_id": "RQO-2026-000001-1",
+  "approved_by": "app_user"
+}
+```
+
+Expected response includes selected option id, work order id, schedule slot id, and next action. Flutter only confirms the user's choice; n8n updates approval, schedule, notification, and audit state.
+
+## Contract guardrails
+
+- Flutter may validate form completeness and render display formatting.
+- Flutter must not calculate quote rankings, warranty outcomes, landlord approval state, invoice line items, payment status, tradie matching, or schedule optimisation.
+- If the app needs a value for UAT, add it to an n8n response or Postgres-backed workflow rather than inventing it in Flutter.
+- New screens from `gamora-sprint5` should be adapted as UI shells over these contracts, not merged with demo fallback business logic.

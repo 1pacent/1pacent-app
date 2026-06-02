@@ -20,13 +20,17 @@ class _StartJobScreenState extends State<StartJobScreen> {
   final _emailController = TextEditingController(text: 'aussiemacs@gmail.com');
   final _addressController = TextEditingController(text: '1 Beach Street');
   final _suburbController = TextEditingController(text: 'Richmond');
-  final _descriptionController = TextEditingController(text: 'Install two new power points in the kitchen.');
-  final _availabilityOneController = TextEditingController(text: 'Monday morning');
-  final _availabilityTwoController = TextEditingController(text: 'Thursday 2:00 pm to 4:00 pm');
+  final _descriptionController = TextEditingController(
+      text: 'Install two new power points in the kitchen.');
+  final _availabilityOneController =
+      TextEditingController(text: 'Monday morning');
+  final _availabilityTwoController =
+      TextEditingController(text: 'Thursday 2:00 pm to 4:00 pm');
 
   String _tradeType = 'electrical';
   String _jobType = 'power_point_install';
   String _urgency = 'normal';
+  String _propertyScenario = 'rental';
   bool _contactConsent = true;
   bool _storeConsent = true;
   bool _submitting = false;
@@ -64,7 +68,11 @@ class _StartJobScreenState extends State<StartJobScreen> {
       jobType: _jobType,
       description: _descriptionController.text.trim(),
       urgency: _urgency,
-      tenantAvailability: [
+      propertyScenario: _propertyScenario,
+      requesterRole: _propertyScenario == 'rental' ? 'tenant' : 'owner',
+      approvalRecipientRole:
+          _propertyScenario == 'rental' ? 'landlord' : 'owner',
+      requesterAvailability: [
         _availabilityOneController.text.trim(),
         _availabilityTwoController.text.trim(),
       ].where((value) => value.isNotEmpty).toList(),
@@ -93,17 +101,35 @@ class _StartJobScreenState extends State<StartJobScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Text('Tell us what you need', style: Theme.of(context).textTheme.headlineSmall),
+            Text('Tell us what you need',
+                style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
-            const Text('Share the job once, then we handle triage, quote options, availability and status updates.'),
+            const Text(
+                'Share the job once, then we handle triage, quote options, availability and status updates.'),
             const SizedBox(height: 20),
             _SectionCard(
               icon: Icons.person_outline,
               title: 'Contact',
               children: [
+                DropdownButtonFormField<String>(
+                  initialValue: _propertyScenario,
+                  decoration: const InputDecoration(labelText: 'Property type'),
+                  items: const [
+                    DropdownMenuItem(
+                        value: 'rental', child: Text('Rental property')),
+                    DropdownMenuItem(
+                        value: 'owner_occupied',
+                        child: Text('Owner occupied home')),
+                  ],
+                  onChanged: (value) => setState(
+                      () => _propertyScenario = value ?? _propertyScenario),
+                ),
                 _TextField(controller: _nameController, label: 'Name'),
                 _TextField(controller: _phoneController, label: 'Mobile'),
-                _TextField(controller: _emailController, label: 'Email', keyboardType: TextInputType.emailAddress),
+                _TextField(
+                    controller: _emailController,
+                    label: 'Email',
+                    keyboardType: TextInputType.emailAddress),
               ],
             ),
             _SectionCard(
@@ -111,39 +137,56 @@ class _StartJobScreenState extends State<StartJobScreen> {
               title: 'Job',
               children: [
                 DropdownButtonFormField<String>(
-                  value: _tradeType,
+                  initialValue: _tradeType,
                   decoration: const InputDecoration(labelText: 'Trade'),
                   items: const [
-                    DropdownMenuItem(value: 'electrical', child: Text('Electrician')),
+                    DropdownMenuItem(
+                        value: 'electrical', child: Text('Electrician')),
                     DropdownMenuItem(value: 'plumbing', child: Text('Plumber')),
-                    DropdownMenuItem(value: 'hvac', child: Text('Heating and cooling')),
-                    DropdownMenuItem(value: 'carpentry', child: Text('Carpentry')),
-                    DropdownMenuItem(value: 'general_maintenance', child: Text('General maintenance')),
+                    DropdownMenuItem(
+                        value: 'hvac', child: Text('Heating and cooling')),
+                    DropdownMenuItem(
+                        value: 'carpentry', child: Text('Carpentry')),
+                    DropdownMenuItem(
+                        value: 'general_maintenance',
+                        child: Text('General maintenance')),
                   ],
-                  onChanged: (value) => setState(() => _tradeType = value ?? _tradeType),
+                  onChanged: (value) =>
+                      setState(() => _tradeType = value ?? _tradeType),
                 ),
                 DropdownButtonFormField<String>(
-                  value: _jobType,
+                  initialValue: _jobType,
                   decoration: const InputDecoration(labelText: 'Job type'),
                   items: const [
-                    DropdownMenuItem(value: 'power_point_install', child: Text('Power point install')),
-                    DropdownMenuItem(value: 'fault_finding', child: Text('Fault finding')),
-                    DropdownMenuItem(value: 'leak_repair', child: Text('Leak repair')),
-                    DropdownMenuItem(value: 'safety_check', child: Text('Safety check')),
-                    DropdownMenuItem(value: 'general_repair', child: Text('General repair')),
+                    DropdownMenuItem(
+                        value: 'power_point_install',
+                        child: Text('Power point install')),
+                    DropdownMenuItem(
+                        value: 'fault_finding', child: Text('Fault finding')),
+                    DropdownMenuItem(
+                        value: 'leak_repair', child: Text('Leak repair')),
+                    DropdownMenuItem(
+                        value: 'safety_check', child: Text('Safety check')),
+                    DropdownMenuItem(
+                        value: 'general_repair', child: Text('General repair')),
                   ],
-                  onChanged: (value) => setState(() => _jobType = value ?? _jobType),
+                  onChanged: (value) =>
+                      setState(() => _jobType = value ?? _jobType),
                 ),
-                _TextField(controller: _descriptionController, label: 'What needs doing?', maxLines: 3),
+                _TextField(
+                    controller: _descriptionController,
+                    label: 'What needs doing?',
+                    maxLines: 3),
                 DropdownButtonFormField<String>(
-                  value: _urgency,
+                  initialValue: _urgency,
                   decoration: const InputDecoration(labelText: 'Urgency'),
                   items: const [
                     DropdownMenuItem(value: 'normal', child: Text('Flexible')),
                     DropdownMenuItem(value: 'high', child: Text('Soon')),
                     DropdownMenuItem(value: 'emergency', child: Text('Urgent')),
                   ],
-                  onChanged: (value) => setState(() => _urgency = value ?? _urgency),
+                  onChanged: (value) =>
+                      setState(() => _urgency = value ?? _urgency),
                 ),
               ],
             ),
@@ -153,8 +196,17 @@ class _StartJobScreenState extends State<StartJobScreen> {
               children: [
                 _TextField(controller: _addressController, label: 'Address'),
                 _TextField(controller: _suburbController, label: 'Suburb'),
-                _TextField(controller: _availabilityOneController, label: 'Best time'),
-                _TextField(controller: _availabilityTwoController, label: 'Backup time', required: false),
+                _TextField(
+                    controller: _availabilityOneController,
+                    label: _propertyScenario == 'rental'
+                        ? 'Tenant best time'
+                        : 'Owner best time'),
+                _TextField(
+                    controller: _availabilityTwoController,
+                    label: _propertyScenario == 'rental'
+                        ? 'Tenant backup time'
+                        : 'Owner backup time',
+                    required: false),
               ],
             ),
             SwitchListTile.adaptive(
@@ -165,15 +217,20 @@ class _StartJobScreenState extends State<StartJobScreen> {
             ),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Store this enquiry for quotes, warranty and invoices'),
+              title: const Text(
+                  'Store this enquiry for quotes, warranty and invoices'),
               value: _storeConsent,
               onChanged: (value) => setState(() => _storeConsent = value),
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
-              onPressed: _submitting || !_contactConsent || !_storeConsent ? null : _submit,
+              onPressed: _submitting || !_contactConsent || !_storeConsent
+                  ? null
+                  : _submit,
               icon: _submitting
-                  ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.send_outlined),
               label: Text(_submitting ? 'Sending request' : 'Request tradie'),
             ),
@@ -193,7 +250,8 @@ class _StartJobScreenState extends State<StartJobScreen> {
 }
 
 class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.icon, required this.title, required this.children});
+  const _SectionCard(
+      {required this.icon, required this.title, required this.children});
 
   final IconData icon;
   final String title;
@@ -203,7 +261,9 @@ class _SectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final spacedChildren = <Widget>[];
     for (final child in children) {
-      if (spacedChildren.isNotEmpty) spacedChildren.add(const SizedBox(height: 10));
+      if (spacedChildren.isNotEmpty) {
+        spacedChildren.add(const SizedBox(height: 10));
+      }
       spacedChildren.add(child);
     }
 
@@ -251,7 +311,8 @@ class _TextField extends StatelessWidget {
       controller: controller,
       maxLines: maxLines,
       keyboardType: keyboardType,
-      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+      decoration:
+          InputDecoration(labelText: label, border: const OutlineInputBorder()),
       validator: (value) {
         if (!required) return null;
         if (value == null || value.trim().isEmpty) return 'Required';
@@ -268,8 +329,11 @@ class _SuccessPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final workOrderId = result['work_order_id']?.toString() ?? result['job_id']?.toString() ?? 'pending';
-    final nextAction = result['next_action']?.toString() ?? 'We will confirm the next step shortly.';
+    final workOrderId = result['work_order_id']?.toString() ??
+        result['job_id']?.toString() ??
+        'pending';
+    final nextAction = result['next_action']?.toString() ??
+        'We will confirm the next step shortly.';
     return Card(
       color: const Color(0xFFEAF6EF),
       child: Padding(
@@ -277,7 +341,8 @@ class _SuccessPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Request sent', style: Theme.of(context).textTheme.titleMedium),
+            Text('Request sent',
+                style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 6),
             Text('Reference: $workOrderId'),
             const SizedBox(height: 6),

@@ -11,8 +11,14 @@ class TradieHomeScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('Tradies will see nearby jobs, route-friendly schedules, quote tasks, warranty flags, and evidence capture.'),
+          const Text(
+              'Tradies will see nearby jobs, route-friendly schedules, quote tasks, warranty flags, and evidence capture.'),
           const SizedBox(height: 16),
+          FilledButton(
+            onPressed: () => context.go('/tradie/jobs/WO-DEMO-001/quote'),
+            child: const Text('Submit quote'),
+          ),
+          const SizedBox(height: 12),
           OutlinedButton(
             onPressed: () => context.go('/tradie/demo/trust'),
             child: const Text('View trust passport'),

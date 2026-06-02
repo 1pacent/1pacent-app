@@ -12,12 +12,14 @@ class TradieTrustPassportScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Text('Tradie $tradieId', style: Theme.of(context).textTheme.titleLarge),
+          Text('Tradie $tradieId',
+              style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
           const Card(
             child: Padding(
               padding: EdgeInsets.all(16),
-              child: Text('Licence, insurance, reviews, completed jobs, warranty terms, evidence quality, and tenant feedback score.'),
+              child: Text(
+                  'Licence, insurance, reviews, completed jobs, warranty terms, evidence quality, and tenant feedback score.'),
             ),
           ),
         ],

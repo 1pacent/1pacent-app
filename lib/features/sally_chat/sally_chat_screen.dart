@@ -5,11 +5,12 @@ class SallyChatScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      appBar: AppBar(title: Text('Sally')),
-      body: Padding(
+    return Scaffold(
+      appBar: AppBar(title: const Text('Sally')),
+      body: const Padding(
         padding: EdgeInsets.all(16),
-        child: Text('Sally will support app chat first, then in-app voice via ElevenLabs once the core work-order loop is stable.'),
+        child: Text(
+            'Sally will support app chat first, then in-app voice via ElevenLabs once the core work-order loop is stable.'),
       ),
     );
   }

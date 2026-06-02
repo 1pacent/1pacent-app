@@ -1,1 +1,9 @@
 # 1pacent-app
+
+Flutter app and n8n workflow deployment assets for the 1pacent tradie/rental maintenance MVP.
+
+## Key Paths
+
+- `lib/` - Flutter app code.
+- `docs/` - API contracts and UAT readiness notes.
+- `n8n/` - source-controlled n8n deployment scripts, workflow runbook, and database schema.
