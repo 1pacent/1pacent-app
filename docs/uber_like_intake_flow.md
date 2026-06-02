@@ -29,7 +29,7 @@ The Uber-style product model separates the customer app, driver app, admin panel
 | Uber module | 1pacent equivalent | n8n or system owner |
 | --- | --- | --- |
 | Sign up | Persona onboarding and relationship resolution | Auth/session plus Postgres relationship records |
-| Aggregation | Sally triage and service classification | Sally workflow, trade/job type rules, Wally warranty check |
+| Aggregation | Sally triage and service classification | ElevenLabs Sally calls n8n trade/job type rules and Wally warranty check |
 | Scheduler | Requester and tradie availability windows | George scheduling and calendar workflows |
 | Promo | Discounts, warranty coverage, landlord charge policy | Future pricing/commercial workflows |
 | Matching | Three quote options with availability, trust, cost, and confidence | Quote option workflow, tradie skills, trust score, commercial terms |
@@ -66,7 +66,7 @@ The Uber UX case-study pattern is useful because it focuses on personalisation, 
 
 - Login selects a persona and the app derives the default property path from that persona.
 - Tenant and owner-occupied requests both submit stable relationship IDs, not anonymous public payloads.
-- Sally chat posts to the Sally n8n webhook and carries the logged-in persona/property context.
+- Sally chat/voice runs in ElevenLabs and carries the logged-in persona/property context into Sally's n8n tool calls.
 - Guided intake captures service need, urgency, requester availability, and property location in a small number of decisions.
 - Intake payload requires warranty/repeat issue checks before non-warranty quote options are offered.
 - Quote options are fetched from n8n, include availability/trust/confidence signals, and are not calculated in Flutter.

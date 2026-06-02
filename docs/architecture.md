@@ -9,15 +9,15 @@ The app is not just a consumer tradie marketplace. The first commercial wedge is
 ## Runtime roles
 
 - Flutter app: customer, tenant, landlord, property manager, and tradie experience.
-- n8n: workflow orchestration and AI agent execution.
+- n8n: workflow orchestration, specialist internal agents, tools, and source-of-truth execution.
 - Postgres: operational source of truth.
 - Qdrant: semantic Authority Document and SME knowledge retrieval.
-- ElevenLabs: Sally voice/chat layer for customer-facing intake.
+- ElevenLabs: Sally voice/chat agent for customer-facing intake.
 - Caddy/VPS: web hosting and reverse proxy.
 
 ## Agent split
 
-- Sally: customer-facing intake in ElevenLabs.
+- Sally: the only customer-facing triage agent, hosted in ElevenLabs. Sally calls n8n tools for price, scheduling, warranty, lead/work-order creation, quote options, approval, and status.
 - George: scheduling optimisation in n8n.
 - Wally: warranty/repeat issue guardrails in n8n.
 - Sparky: electrical SME support in n8n.

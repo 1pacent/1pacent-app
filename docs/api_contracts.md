@@ -56,9 +56,14 @@ The Flutter tracking route accepts n8n-generated links in the form:
 
 Expected response should include a status key, reference/work order id, description, next action, optional landlord approval status, optional scheduled window, and optional warranty/safety guardrails.
 
-## Sally chat
+## Legacy Sally app-chat bridge
 
 `POST /webhook/agents/sally/chat`
+
+This endpoint is a temporary Flutter text-chat bridge for UAT. The intended
+production path is that Sally runs in ElevenLabs for both voice and chat, then
+Sally calls direct n8n tools such as `price_estimate`, `create_lead`, and
+`george_schedule_recommendation`.
 
 ```json
 {
@@ -110,6 +115,9 @@ Expected response:
 The n8n deployment script is
 `n8n/deploy/deploy_sally_elevenlabs_voice_bridge.ps1`. Set
 `ELEVENLABS_API_KEY` in the PowerShell session before running that script.
+
+This token endpoint does not host Sally in n8n. It only allows Flutter to start
+an ElevenLabs Sally session without exposing the ElevenLabs API key.
 
 ## Property manager operations summary
 
