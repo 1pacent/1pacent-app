@@ -8,6 +8,20 @@ import '../../services/n8n_webhook_service.dart';
 
 enum _IntakeStage { triage, availability, options, booking, active }
 
+class _ServiceOption {
+  const _ServiceOption({
+    required this.key,
+    required this.label,
+    required this.defaultDescription,
+    required this.estimatedAmount,
+  });
+
+  final String key;
+  final String label;
+  final String defaultDescription;
+  final double estimatedAmount;
+}
+
 class StartJobScreen extends StatefulWidget {
   const StartJobScreen({super.key});
 
@@ -60,6 +74,118 @@ class _StartJobScreenState extends State<StartJobScreen> {
   }
 
   bool get _isRental => _propertyScenario == 'rental';
+
+  static const Map<String, String> _tradeOptions = {
+    'electrical': 'Electrical',
+    'plumbing': 'Plumbing',
+    'hvac': 'Heating',
+    'general_maintenance': 'General',
+  };
+
+  static const Map<String, List<_ServiceOption>> _serviceOptionsByTrade = {
+    'electrical': [
+      _ServiceOption(
+        key: 'fault_finding',
+        label: 'Power fault',
+        defaultDescription: 'Intermittent power issue after a prior repair.',
+        estimatedAmount: 360,
+      ),
+      _ServiceOption(
+        key: 'safety_check',
+        label: 'Safety check',
+        defaultDescription: 'Electrical safety check requested.',
+        estimatedAmount: 220,
+      ),
+      _ServiceOption(
+        key: 'power_point_install',
+        label: 'Power point',
+        defaultDescription: 'Install or repair a power point.',
+        estimatedAmount: 420,
+      ),
+      _ServiceOption(
+        key: 'lighting_repair',
+        label: 'Lighting',
+        defaultDescription: 'Light fitting or switch issue.',
+        estimatedAmount: 280,
+      ),
+    ],
+    'plumbing': [
+      _ServiceOption(
+        key: 'leak_repair',
+        label: 'Leak',
+        defaultDescription: 'Leaking tap in the kitchen.',
+        estimatedAmount: 240,
+      ),
+      _ServiceOption(
+        key: 'blocked_drain',
+        label: 'Blocked drain',
+        defaultDescription: 'Blocked drain or slow draining fixture.',
+        estimatedAmount: 320,
+      ),
+      _ServiceOption(
+        key: 'toilet_repair',
+        label: 'Toilet',
+        defaultDescription: 'Toilet is leaking, blocked, or not flushing.',
+        estimatedAmount: 260,
+      ),
+      _ServiceOption(
+        key: 'hot_water_issue',
+        label: 'Hot water',
+        defaultDescription: 'Hot water is not working properly.',
+        estimatedAmount: 380,
+      ),
+    ],
+    'hvac': [
+      _ServiceOption(
+        key: 'heating_fault',
+        label: 'Heating fault',
+        defaultDescription: 'Heating is not working properly.',
+        estimatedAmount: 330,
+      ),
+      _ServiceOption(
+        key: 'cooling_fault',
+        label: 'Cooling fault',
+        defaultDescription: 'Cooling is not working properly.',
+        estimatedAmount: 330,
+      ),
+      _ServiceOption(
+        key: 'service_clean',
+        label: 'Service',
+        defaultDescription: 'Heating or cooling unit service requested.',
+        estimatedAmount: 260,
+      ),
+    ],
+    'general_maintenance': [
+      _ServiceOption(
+        key: 'door_window_repair',
+        label: 'Door/window',
+        defaultDescription: 'Door, window, lock, or handle needs repair.',
+        estimatedAmount: 260,
+      ),
+      _ServiceOption(
+        key: 'carpentry_repair',
+        label: 'Carpentry',
+        defaultDescription: 'General carpentry or fixture repair required.',
+        estimatedAmount: 300,
+      ),
+      _ServiceOption(
+        key: 'general_repair',
+        label: 'General repair',
+        defaultDescription: 'General maintenance repair required.',
+        estimatedAmount: 300,
+      ),
+    ],
+  };
+
+  List<_ServiceOption> get _serviceOptions =>
+      _serviceOptionsByTrade[_tradeType] ?? _serviceOptionsByTrade.values.first;
+
+  _ServiceOption get _selectedServiceOption {
+    return _serviceOptions.firstWhere(
+      (option) => option.key == _jobType,
+      orElse: () => _serviceOptions.first,
+    );
+  }
 
   bool get _canApproveInApp {
     final persona = appSession.user?.persona;
@@ -214,18 +340,29 @@ class _StartJobScreenState extends State<StartJobScreen> {
   }
 
   double _estimateAmount() {
-    switch (_jobType) {
-      case 'leak_repair':
-        return 240;
-      case 'safety_check':
-        return 220;
-      case 'power_point_install':
-        return 420;
-      case 'fault_finding':
-        return 360;
-      default:
-        return 300;
-    }
+    return _selectedServiceOption.estimatedAmount;
+  }
+
+  void _selectTrade(String value) {
+    final nextOptions =
+        _serviceOptionsByTrade[value] ?? _serviceOptionsByTrade.values.first;
+    final nextJob = nextOptions.first;
+    setState(() {
+      _tradeType = value;
+      _jobType = nextJob.key;
+      _descriptionController.text = nextJob.defaultDescription;
+    });
+  }
+
+  void _selectJobType(String value) {
+    final option = _serviceOptions.firstWhere(
+      (item) => item.key == value,
+      orElse: () => _serviceOptions.first,
+    );
+    setState(() {
+      _jobType = option.key;
+      _descriptionController.text = option.defaultDescription;
+    });
   }
 
   @override
@@ -392,35 +529,22 @@ class _StartJobScreenState extends State<StartJobScreen> {
     return _IntakeCard(
       title: 'What service is needed?',
       subtitle:
-          'This is the app version of Sally triage. Voice will use the same payload once the ElevenLabs bridge is ready.',
+          'Sally checks the right trade path, warranty, urgency and access before options are matched.',
       children: [
         _SegmentedChoice(
           label: 'Trade',
           value: _tradeType,
-          options: const {
-            'electrical': 'Electrical',
-            'plumbing': 'Plumbing',
-            'hvac': 'Heating',
-            'general_maintenance': 'General',
-          },
-          onChanged: (value) => setState(() {
-            _tradeType = value;
-            if (value == 'plumbing') _jobType = 'leak_repair';
-            if (value == 'electrical') _jobType = 'fault_finding';
-          }),
+          options: _tradeOptions,
+          onChanged: _selectTrade,
         ),
         const SizedBox(height: 12),
         _SegmentedChoice(
           label: 'Issue type',
           value: _jobType,
-          options: const {
-            'fault_finding': 'Fault',
-            'leak_repair': 'Leak',
-            'safety_check': 'Check',
-            'power_point_install': 'Install',
-            'general_repair': 'Repair',
+          options: {
+            for (final option in _serviceOptions) option.key: option.label,
           },
-          onChanged: (value) => setState(() => _jobType = value),
+          onChanged: _selectJobType,
         ),
         const SizedBox(height: 12),
         TextField(
