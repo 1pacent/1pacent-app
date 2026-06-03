@@ -14,12 +14,14 @@ class _ServiceOption {
     required this.label,
     required this.defaultDescription,
     required this.estimatedAmount,
+    required this.icon,
   });
 
   final String key;
   final String label;
   final String defaultDescription;
   final double estimatedAmount;
+  final IconData icon;
 }
 
 class StartJobScreen extends StatefulWidget {
@@ -75,6 +77,14 @@ class _StartJobScreenState extends State<StartJobScreen> {
 
   bool get _isRental => _propertyScenario == 'rental';
 
+  String get _propertyLabel {
+    final address = _addressController.text.trim();
+    final suburb = _suburbController.text.trim();
+    if (address.isEmpty && suburb.isEmpty) return 'Property to confirm';
+    if (suburb.isEmpty) return address;
+    return '$address, $suburb';
+  }
+
   static const Map<String, String> _tradeOptions = {
     'electrical': 'Electrical',
     'plumbing': 'Plumbing',
@@ -89,24 +99,28 @@ class _StartJobScreenState extends State<StartJobScreen> {
         label: 'Power fault',
         defaultDescription: 'Intermittent power issue after a prior repair.',
         estimatedAmount: 360,
+        icon: Icons.electrical_services_outlined,
       ),
       _ServiceOption(
         key: 'safety_check',
         label: 'Safety check',
         defaultDescription: 'Electrical safety check requested.',
         estimatedAmount: 220,
+        icon: Icons.health_and_safety_outlined,
       ),
       _ServiceOption(
         key: 'power_point_install',
         label: 'Power point',
         defaultDescription: 'Install or repair a power point.',
         estimatedAmount: 420,
+        icon: Icons.power_outlined,
       ),
       _ServiceOption(
         key: 'lighting_repair',
         label: 'Lighting',
         defaultDescription: 'Light fitting or switch issue.',
         estimatedAmount: 280,
+        icon: Icons.lightbulb_outline,
       ),
     ],
     'plumbing': [
@@ -115,24 +129,28 @@ class _StartJobScreenState extends State<StartJobScreen> {
         label: 'Leak',
         defaultDescription: 'Leaking tap in the kitchen.',
         estimatedAmount: 240,
+        icon: Icons.water_drop_outlined,
       ),
       _ServiceOption(
         key: 'blocked_drain',
         label: 'Blocked drain',
         defaultDescription: 'Blocked drain or slow draining fixture.',
         estimatedAmount: 320,
+        icon: Icons.water_damage_outlined,
       ),
       _ServiceOption(
         key: 'toilet_repair',
         label: 'Toilet',
         defaultDescription: 'Toilet is leaking, blocked, or not flushing.',
         estimatedAmount: 260,
+        icon: Icons.wc_outlined,
       ),
       _ServiceOption(
         key: 'hot_water_issue',
         label: 'Hot water',
         defaultDescription: 'Hot water is not working properly.',
         estimatedAmount: 380,
+        icon: Icons.local_fire_department_outlined,
       ),
     ],
     'hvac': [
@@ -141,18 +159,21 @@ class _StartJobScreenState extends State<StartJobScreen> {
         label: 'Heating fault',
         defaultDescription: 'Heating is not working properly.',
         estimatedAmount: 330,
+        icon: Icons.thermostat_outlined,
       ),
       _ServiceOption(
         key: 'cooling_fault',
         label: 'Cooling fault',
         defaultDescription: 'Cooling is not working properly.',
         estimatedAmount: 330,
+        icon: Icons.ac_unit_outlined,
       ),
       _ServiceOption(
         key: 'service_clean',
         label: 'Service',
         defaultDescription: 'Heating or cooling unit service requested.',
         estimatedAmount: 260,
+        icon: Icons.cleaning_services_outlined,
       ),
     ],
     'general_maintenance': [
@@ -161,18 +182,21 @@ class _StartJobScreenState extends State<StartJobScreen> {
         label: 'Door/window',
         defaultDescription: 'Door, window, lock, or handle needs repair.',
         estimatedAmount: 260,
+        icon: Icons.door_front_door_outlined,
       ),
       _ServiceOption(
         key: 'carpentry_repair',
         label: 'Carpentry',
         defaultDescription: 'General carpentry or fixture repair required.',
         estimatedAmount: 300,
+        icon: Icons.carpenter_outlined,
       ),
       _ServiceOption(
         key: 'general_repair',
         label: 'General repair',
         defaultDescription: 'General maintenance repair required.',
         estimatedAmount: 300,
+        icon: Icons.handyman_outlined,
       ),
     ],
   };
@@ -370,8 +394,13 @@ class _StartJobScreenState extends State<StartJobScreen> {
     final user = appSession.user;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Book maintenance'),
+        title: const Text('1pacent'),
         actions: [
+          IconButton(
+            tooltip: 'Chat with Sally',
+            icon: const Icon(Icons.support_agent_outlined),
+            onPressed: () => context.go('/sally'),
+          ),
           IconButton(
             tooltip: 'Track current job',
             icon: const Icon(Icons.route_outlined),
@@ -384,14 +413,17 @@ class _StartJobScreenState extends State<StartJobScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            _ProgressMap(
+            _RequestMapHeader(
               stage: _stage,
               title: _heroTitle(user),
               subtitle: _heroSubtitle,
+              propertyLabel: _propertyLabel,
+              serviceLabel: _selectedServiceOption.label,
+              tradeLabel: _tradeOptions[_tradeType] ?? _tradeType,
             ),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 16),
                 children: [
                   _PersonaBanner(user: user),
                   const SizedBox(height: 12),
@@ -441,15 +473,15 @@ class _StartJobScreenState extends State<StartJobScreen> {
   String get _heroSubtitle {
     switch (_stage) {
       case _IntakeStage.triage:
-        return 'Sally checks the issue, warranty, urgency and property path.';
+        return 'Confirm the service and property details.';
       case _IntakeStage.availability:
-        return 'Pick windows that n8n will match against tradie availability.';
+        return 'Choose access windows that match real tradie availability.';
       case _IntakeStage.options:
-        return 'n8n has returned quote options with availability and trust scores.';
+        return 'Compare available tradie options.';
       case _IntakeStage.booking:
-        return 'Confirm the option so George can lock the appointment.';
+        return 'Confirm the service option.';
       case _IntakeStage.active:
-        return 'The work order is active and ready for tracking.';
+        return 'The booking is active and ready for tracking.';
     }
   }
 
@@ -458,7 +490,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
       case _IntakeStage.triage:
         return 'Continue';
       case _IntakeStage.availability:
-        return 'Match options';
+        return 'See matches';
       case _IntakeStage.options:
         return _canApproveInApp ? 'Request this tradie' : 'Track approval';
       case _IntakeStage.booking:
@@ -528,23 +560,23 @@ class _StartJobScreenState extends State<StartJobScreen> {
   Widget _triageCard() {
     return _IntakeCard(
       title: 'What service is needed?',
-      subtitle:
-          'Sally checks the right trade path, warranty, urgency and access before options are matched.',
+      subtitle: 'The right details help avoid repeat visits and wrong quotes.',
       children: [
-        _SegmentedChoice(
-          label: 'Trade',
+        _TradeTabs(
           value: _tradeType,
           options: _tradeOptions,
           onChanged: _selectTrade,
         ),
-        const SizedBox(height: 12),
-        _SegmentedChoice(
-          label: 'Issue type',
+        const SizedBox(height: 16),
+        _ServicePicker(
           value: _jobType,
-          options: {
-            for (final option in _serviceOptions) option.key: option.label,
-          },
+          options: _serviceOptions,
           onChanged: _selectJobType,
+        ),
+        const SizedBox(height: 16),
+        _LocationFields(
+          addressController: _addressController,
+          suburbController: _suburbController,
         ),
         const SizedBox(height: 12),
         TextField(
@@ -553,22 +585,6 @@ class _StartJobScreenState extends State<StartJobScreen> {
           maxLines: 4,
           decoration: const InputDecoration(
             labelText: 'Tell Sally what happened',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextField(
-          controller: _addressController,
-          decoration: const InputDecoration(
-            labelText: 'Property address',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 10),
-        TextField(
-          controller: _suburbController,
-          decoration: const InputDecoration(
-            labelText: 'Suburb',
             border: OutlineInputBorder(),
           ),
         ),
@@ -591,8 +607,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
     final label = _isRental ? 'tenant' : 'owner';
     return _IntakeCard(
       title: 'When can the $label provide access?',
-      subtitle:
-          'George will only offer quote windows where requester and tradie availability overlap.',
+      subtitle: 'Only matching appointment windows will be offered.',
       children: [
         for (final option in _availabilityOptions) ...[
           _ChoiceRow(
@@ -609,7 +624,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
           icon: Icons.verified_user_outlined,
           title: 'Warranty first',
           body:
-              'The intake payload requires Wally to check warranty and repeat-issue guardrails before new quotes are offered.',
+              'Repeat issues and warranty coverage are checked before new paid options are offered.',
         ),
       ],
     );
@@ -620,8 +635,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
     if (_quotes.isEmpty) {
       return _IntakeCard(
         title: 'Matching quote options',
-        subtitle:
-            'n8n accepted the intake. Quote options are still loading or no matching tradie availability was returned.',
+        subtitle: 'We are checking availability, price and trust signals.',
         children: [
           if (workOrderId != null) Text('Reference: $workOrderId'),
           const SizedBox(height: 12),
@@ -640,7 +654,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
           _canApproveInApp ? 'Pick a service option' : 'Sent to the approver',
       subtitle: _canApproveInApp
           ? 'Each option already fits the selected access window and tradie availability.'
-          : 'The owner or landlord receives these options for approval in their flow.',
+          : 'The owner or landlord receives these options for approval.',
       children: [
         for (final quote in _quotes) ...[
           _QuoteOptionRow(
@@ -666,7 +680,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
     return _IntakeCard(
       title: 'Request booking',
       subtitle:
-          'This mirrors the Uber request step: confirm the option, then n8n asks George to lock the appointment.',
+          'Confirm the option and the appointment request will be locked in.',
       children: [
         if (quote != null) _QuoteOptionRow(quote: quote, selected: true),
         const SizedBox(height: 10),
@@ -674,7 +688,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
           icon: Icons.auto_awesome_outlined,
           title: 'Tradie acceptance',
           body:
-              'UAT treats acceptance as automated when the tradie availability policy allows it. Manual tradie accept is the next phase.',
+              'Available tradies can auto-accept by policy, or confirm manually when required.',
         ),
       ],
     );
@@ -690,7 +704,7 @@ class _StartJobScreenState extends State<StartJobScreen> {
     return _IntakeCard(
       title: 'Active job',
       subtitle:
-          'The intake milestone is complete. Completion evidence, parts, warranty record and payment move into the next phase.',
+          'Next steps are completion evidence, warranty record and payment.',
       children: [
         _NoticeCard(
           icon: Icons.task_alt,
@@ -708,52 +722,380 @@ class _StartJobScreenState extends State<StartJobScreen> {
   }
 }
 
-class _ProgressMap extends StatelessWidget {
-  const _ProgressMap({
+class _RequestMapHeader extends StatelessWidget {
+  const _RequestMapHeader({
     required this.stage,
     required this.title,
     required this.subtitle,
+    required this.propertyLabel,
+    required this.serviceLabel,
+    required this.tradeLabel,
   });
 
   final _IntakeStage stage;
   final String title;
   final String subtitle;
+  final String propertyLabel;
+  final String serviceLabel;
+  final String tradeLabel;
 
   @override
   Widget build(BuildContext context) {
     final activeIndex = _IntakeStage.values.indexOf(stage);
     final colorScheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 226,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _MapHeaderPainter(
+                primary: colorScheme.primary.withValues(alpha: 0.42),
+                road: colorScheme.outlineVariant.withValues(alpha: 0.9),
+                background: colorScheme.surfaceContainerHighest,
+              ),
+            ),
+          ),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  colorScheme.surface.withValues(alpha: 0.96),
+                  colorScheme.surface.withValues(alpha: 0.70),
+                  colorScheme.surface.withValues(alpha: 0.18),
+                ],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 4),
+                Text(subtitle),
+                const Spacer(),
+                _RouteSummary(
+                  propertyLabel: propertyLabel,
+                  serviceLabel: serviceLabel,
+                  tradeLabel: tradeLabel,
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    for (var index = 0;
+                        index < _IntakeStage.values.length;
+                        index++) ...[
+                      _StepDot(active: index <= activeIndex, index: index + 1),
+                      if (index < _IntakeStage.values.length - 1)
+                        Expanded(
+                          child: Container(
+                            height: 2,
+                            color: index < activeIndex
+                                ? colorScheme.primary
+                                : colorScheme.outlineVariant,
+                          ),
+                        ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapHeaderPainter extends CustomPainter {
+  const _MapHeaderPainter({
+    required this.primary,
+    required this.road,
+    required this.background,
+  });
+
+  final Color primary;
+  final Color road;
+  final Color background;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(Offset.zero & size, Paint()..color = background);
+
+    final roadPaint = Paint()
+      ..color = road
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke;
+    final routePaint = Paint()
+      ..color = primary
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+
+    for (final y in [34.0, 92.0, 156.0]) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y + 28), roadPaint);
+    }
+    for (final x in [42.0, 156.0, 286.0, 418.0]) {
+      canvas.drawLine(Offset(x, 0), Offset(x - 64, size.height), roadPaint);
+    }
+
+    final route = Path()
+      ..moveTo(size.width * 0.16, size.height * 0.70)
+      ..quadraticBezierTo(
+        size.width * 0.40,
+        size.height * 0.32,
+        size.width * 0.62,
+        size.height * 0.56,
+      )
+      ..quadraticBezierTo(
+        size.width * 0.78,
+        size.height * 0.72,
+        size.width * 0.90,
+        size.height * 0.42,
+      );
+    canvas.drawPath(route, routePaint);
+
+    final dotPaint = Paint()..color = primary;
+    canvas.drawCircle(
+      Offset(size.width * 0.16, size.height * 0.70),
+      7,
+      dotPaint,
+    );
+    canvas.drawCircle(
+      Offset(size.width * 0.90, size.height * 0.42),
+      7,
+      dotPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MapHeaderPainter oldDelegate) {
+    return primary != oldDelegate.primary ||
+        road != oldDelegate.road ||
+        background != oldDelegate.background;
+  }
+}
+
+class _RouteSummary extends StatelessWidget {
+  const _RouteSummary({
+    required this.propertyLabel,
+    required this.serviceLabel,
+    required this.tradeLabel,
+  });
+
+  final String propertyLabel;
+  final String serviceLabel;
+  final String tradeLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
-      color: colorScheme.primaryContainer,
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.headlineSmall),
-          const SizedBox(height: 6),
-          Text(subtitle),
-          const SizedBox(height: 18),
           Row(
             children: [
-              for (var index = 0;
-                  index < _IntakeStage.values.length;
-                  index++) ...[
-                _StepDot(active: index <= activeIndex, index: index + 1),
-                if (index < _IntakeStage.values.length - 1)
-                  Expanded(
-                    child: Container(
-                      height: 2,
-                      color: index < activeIndex
-                          ? colorScheme.primary
-                          : colorScheme.outlineVariant,
-                    ),
-                  ),
-              ],
+              const Icon(Icons.home_outlined, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  propertyLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.build_outlined, size: 20, color: colorScheme.primary),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '$tradeLabel - $serviceLabel',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TradeTabs extends StatelessWidget {
+  const _TradeTabs({
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String value;
+  final Map<String, String> options;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final entry in options.entries) ...[
+            ChoiceChip(
+              label: Text(entry.value),
+              selected: value == entry.key,
+              onSelected: (_) => onChanged(entry.key),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ServicePicker extends StatelessWidget {
+  const _ServicePicker({
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final String value;
+  final List<_ServiceOption> options;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 112,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: options.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, index) {
+          final option = options[index];
+          final selected = option.key == value;
+          return _ServiceOptionTile(
+            option: option,
+            selected: selected,
+            onTap: () => onChanged(option.key),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _ServiceOptionTile extends StatelessWidget {
+  const _ServiceOptionTile({
+    required this.option,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _ServiceOption option;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        width: 126,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected ? colorScheme.primaryContainer : colorScheme.surface,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? colorScheme.primary : colorScheme.outlineVariant,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(option.icon,
+                color: selected ? colorScheme.primary : colorScheme.onSurface),
+            const Spacer(),
+            Text(
+              option.label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 2),
+            Text('From \$${option.estimatedAmount.toStringAsFixed(0)}'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationFields extends StatelessWidget {
+  const _LocationFields({
+    required this.addressController,
+    required this.suburbController,
+  });
+
+  final TextEditingController addressController;
+  final TextEditingController suburbController;
+
+  @override
+  Widget build(BuildContext context) {
+    final addressField = TextField(
+      controller: addressController,
+      decoration: const InputDecoration(
+        prefixIcon: Icon(Icons.home_outlined),
+        labelText: 'Property address',
+        border: OutlineInputBorder(),
+      ),
+    );
+    final suburbField = TextField(
+      controller: suburbController,
+      decoration: const InputDecoration(
+        labelText: 'Suburb',
+        border: OutlineInputBorder(),
+      ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 520) {
+          return Column(
+            children: [
+              addressField,
+              const SizedBox(height: 10),
+              suburbField,
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(flex: 3, child: addressField),
+            const SizedBox(width: 10),
+            Expanded(flex: 2, child: suburbField),
+          ],
+        );
+      },
     );
   }
 }
