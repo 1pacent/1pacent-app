@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -33,11 +35,13 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
   bool _sending = false;
   bool _preparingVoice = false;
   bool _voiceActive = false;
+  Timer? _voiceEventPoller;
   String? _voiceConversationId;
   String? _error;
 
   @override
   void dispose() {
+    _voiceEventPoller?.cancel();
     _endVoiceBridge();
     _messageController.dispose();
     super.dispose();
@@ -168,7 +172,17 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
         return;
       }
 
-      final voiceSession = await _voiceBridge.start(token);
+      final voiceSession = await _voiceBridge.start(token, {
+        'source': 'customer_app',
+        'app_conversation_id': _conversationId,
+        'user_id': user?.id ?? '',
+        'user_name': user?.name ?? '',
+        'user_email': user?.email ?? '',
+        'persona': user?.personaLabel ?? '',
+        'property_id': user?.propertyId ?? '',
+        'property_scenario': user?.propertyScenario ?? '',
+      });
+      _startVoiceEventPolling();
 
       setState(() {
         _voiceActive = true;
@@ -207,6 +221,8 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
     });
 
     try {
+      _voiceEventPoller?.cancel();
+      await _drainVoiceEvents();
       await _endVoiceBridge();
       if (!mounted) return;
       setState(() {
@@ -234,6 +250,39 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
     } catch (_) {
       // Best effort only. Navigation/dispose should not block on the browser SDK.
     }
+  }
+
+  void _startVoiceEventPolling() {
+    _voiceEventPoller?.cancel();
+    _voiceEventPoller = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _drainVoiceEvents(),
+    );
+  }
+
+  Future<void> _drainVoiceEvents() async {
+    final events = await _voiceBridge.drainEvents();
+    if (!mounted || events.isEmpty) return;
+
+    final transcriptEvents = events.where(
+      (event) => event.type == 'transcript' && event.text.trim().isNotEmpty,
+    );
+    if (transcriptEvents.isEmpty) return;
+
+    setState(() {
+      for (final event in transcriptEvents) {
+        final sender = event.role == 'user' ? 'user' : 'sally';
+        _messages.add(ConversationMessage(
+          id: event.id.isEmpty
+              ? 'voice-event-${DateTime.now().microsecondsSinceEpoch}'
+              : event.id,
+          conversationId: _conversationId,
+          sender: sender,
+          text: event.text,
+          createdAt: DateTime.now(),
+        ));
+      }
+    });
   }
 
   @override
