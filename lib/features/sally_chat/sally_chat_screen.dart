@@ -5,6 +5,7 @@ import '../../core/session/app_session.dart';
 import '../../models/conversation_message.dart';
 import '../../services/elevenlabs_config.dart';
 import '../../services/n8n_webhook_service.dart';
+import '../../services/sally_voice_bridge.dart';
 
 class SallyChatScreen extends StatefulWidget {
   const SallyChatScreen({super.key});
@@ -15,6 +16,7 @@ class SallyChatScreen extends StatefulWidget {
 
 class _SallyChatScreenState extends State<SallyChatScreen> {
   final _service = N8nWebhookService();
+  final _voiceBridge = createSallyVoiceBridge();
   final _messageController = TextEditingController();
   final _conversationId = 'sally-uat-${DateTime.now().millisecondsSinceEpoch}';
 
@@ -30,10 +32,13 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
   ];
   bool _sending = false;
   bool _preparingVoice = false;
+  bool _voiceActive = false;
+  String? _voiceConversationId;
   String? _error;
 
   @override
   void dispose() {
+    _endVoiceBridge();
     _messageController.dispose();
     super.dispose();
   }
@@ -111,7 +116,16 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
     }
   }
 
-  Future<void> _prepareVoiceSession() async {
+  Future<void> _toggleVoiceSession() async {
+    if (_voiceActive) {
+      await _stopVoiceSession();
+      return;
+    }
+
+    await _startVoiceSession();
+  }
+
+  Future<void> _startVoiceSession() async {
     final user = appSession.user;
     setState(() {
       _preparingVoice = true;
@@ -139,16 +153,32 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
       final token = response['token']?.toString() ??
           response['conversation_token']?.toString() ??
           '';
-      final message = success && token.isNotEmpty
-          ? 'Sally voice is authorised. The next build step is starting the WebRTC microphone session with this short-lived token.'
-          : response['message']?.toString() ??
-              'Sally voice token was not returned by the bridge.';
+      if (!success || token.isEmpty) {
+        final message = response['message']?.toString() ??
+            'Sally voice token was not returned by the bridge.';
+        setState(() {
+          _messages.add(ConversationMessage(
+            id: 'voice-${DateTime.now().microsecondsSinceEpoch}',
+            conversationId: _conversationId,
+            sender: 'sally',
+            text: message,
+            createdAt: DateTime.now(),
+          ));
+        });
+        return;
+      }
+
+      final voiceSession = await _voiceBridge.start(token);
+
       setState(() {
+        _voiceActive = true;
+        _voiceConversationId = voiceSession.conversationId;
         _messages.add(ConversationMessage(
           id: 'voice-${DateTime.now().microsecondsSinceEpoch}',
           conversationId: _conversationId,
           sender: 'sally',
-          text: message,
+          text:
+              'Sally voice is live. You can speak now, and I will use the same intake tools for price, availability, warranty and booking.',
           createdAt: DateTime.now(),
         ));
       });
@@ -167,6 +197,42 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
       });
     } finally {
       if (mounted) setState(() => _preparingVoice = false);
+    }
+  }
+
+  Future<void> _stopVoiceSession() async {
+    setState(() {
+      _preparingVoice = true;
+      _error = null;
+    });
+
+    try {
+      await _endVoiceBridge();
+      if (!mounted) return;
+      setState(() {
+        _voiceActive = false;
+        _voiceConversationId = null;
+        _messages.add(ConversationMessage(
+          id: 'voice-stop-${DateTime.now().microsecondsSinceEpoch}',
+          conversationId: _conversationId,
+          sender: 'sally',
+          text: 'Sally voice has ended.',
+          createdAt: DateTime.now(),
+        ));
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _preparingVoice = false);
+    }
+  }
+
+  Future<void> _endVoiceBridge() async {
+    try {
+      await _voiceBridge.end();
+    } catch (_) {
+      // Best effort only. Navigation/dispose should not block on the browser SDK.
     }
   }
 
@@ -206,7 +272,9 @@ class _SallyChatScreenState extends State<SallyChatScreen> {
               sending: _sending,
               onSend: _sendMessage,
               preparingVoice: _preparingVoice,
-              onVoice: _prepareVoiceSession,
+              voiceActive: _voiceActive,
+              voiceConversationId: _voiceConversationId,
+              onVoice: _toggleVoiceSession,
             ),
           ],
         ),
@@ -316,6 +384,8 @@ class _Composer extends StatelessWidget {
     required this.sending,
     required this.onSend,
     required this.preparingVoice,
+    required this.voiceActive,
+    required this.voiceConversationId,
     required this.onVoice,
   });
 
@@ -323,6 +393,8 @@ class _Composer extends StatelessWidget {
   final bool sending;
   final VoidCallback onSend;
   final bool preparingVoice;
+  final bool voiceActive;
+  final String? voiceConversationId;
   final VoidCallback onVoice;
 
   @override
@@ -334,25 +406,41 @@ class _Composer extends StatelessWidget {
         child: Row(
           children: [
             IconButton(
-              tooltip: 'Prepare Sally voice',
+              tooltip: voiceActive ? 'End Sally voice' : 'Start Sally voice',
               onPressed: preparingVoice ? null : onVoice,
               icon: preparingVoice
                   ? const SizedBox.square(
                       dimension: 18,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.mic_none_outlined),
+                  : Icon(voiceActive
+                      ? Icons.call_end_outlined
+                      : Icons.mic_none_outlined),
             ),
             Expanded(
-              child: TextField(
-                controller: controller,
-                minLines: 1,
-                maxLines: 3,
-                decoration: const InputDecoration(
-                  hintText: 'Message Sally',
-                  border: OutlineInputBorder(),
-                ),
-                onSubmitted: (_) => sending ? null : onSend(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (voiceActive) ...[
+                    Text(
+                      'Voice live${voiceConversationId == null || voiceConversationId!.isEmpty ? '' : ' - $voiceConversationId'}',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                  ],
+                  TextField(
+                    controller: controller,
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      hintText: 'Message Sally',
+                      border: OutlineInputBorder(),
+                    ),
+                    onSubmitted: (_) => sending ? null : onSend(),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: 8),
