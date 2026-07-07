@@ -1,0 +1,19 @@
+{
+  "name": "1pacent",
+  "private": true,
+  "version": "0.2.0",
+  "description": "1Pacent — compliance-first property maintenance orchestration platform",
+  "scripts": {
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @1pacent/web dev"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.0.0",
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "sharp"]
+  }
+}
