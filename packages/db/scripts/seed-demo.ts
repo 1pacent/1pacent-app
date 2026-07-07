@@ -59,6 +59,27 @@ try {
               values (${orgId}, ${propertyId}, ${key}, ${completed})`;
   }
 
+  // Demo personas — landlord, property manager, and the tenant Sally talks
+  // to, plus 3 seeded tradies for the quote marketplace. All share one
+  // inbox (mac@1pacent.com) so every notification email is visible in one
+  // place during the demo.
+  const DEMO_EMAIL = "mac@1pacent.com";
+  const [tenant] = await sql`insert into contacts (org_id, kind, full_name, email)
+    values (${orgId}, 'tenant', 'Priya Nair', ${DEMO_EMAIL}) returning id`;
+  await sql`insert into contacts (org_id, kind, full_name, email)
+    values (${orgId}, 'owner', 'Mark McNamara', ${DEMO_EMAIL})`; // landlord
+  await sql`insert into contacts (org_id, kind, full_name, email)
+    values (${orgId}, 'owner', 'Jordan Blake (Property Manager)', ${DEMO_EMAIL})`;
+  const tradieRows: Array<[string, string]> = [
+    ["John Snow", "electrical"],
+    ["Leo Baker", "plumbing"],
+    ["Sarah Mannis", "general_maintenance"],
+  ];
+  for (const [name, trade] of tradieRows) {
+    await sql`insert into contacts (org_id, kind, full_name, email, trade_type)
+              values (${orgId}, 'tradie', ${name}, ${DEMO_EMAIL}, ${trade})`;
+  }
+
   // A pending-approval request with a live approval link.
   const [req] = await sql`insert into maintenance_requests
     (org_id, property_id, title, description, category, is_urgent, status, estimate_cents)
@@ -73,14 +94,16 @@ try {
 
   const intake = newToken();
   const approval = newToken();
-  await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, expires_at)
-            values (${orgId}, ${intake.hash}, 'tenant_intake', ${fitzroy!.id}, ${new Date(Date.now() + 90 * 86_400_000)})`;
+  await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, contact_id, expires_at)
+            values (${orgId}, ${intake.hash}, 'tenant_intake', ${fitzroy!.id}, ${tenant!.id}, ${new Date(Date.now() + 90 * 86_400_000)})`;
   await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, expires_at)
             values (${orgId}, ${approval.hash}, 'landlord_approval', ${req!.id}, ${new Date(Date.now() + 72 * 3_600_000)})`;
 
   console.log("Seeded demo org:", orgId);
-  console.log("Tenant intake link:     /r/" + intake.token);
-  console.log("Landlord approval link: /a/" + approval.token);
+  console.log("Tenant intake link (chat with Sally): /r/" + intake.token);
+  console.log("Landlord approval link:               /a/" + approval.token);
+  console.log("3 tradie contacts + landlord + property manager seeded, all at", DEMO_EMAIL);
+  console.log("Tradie quote links are issued dynamically once a request reaches 'quoting' — check the property page.");
 } finally {
   await sql.end();
 }

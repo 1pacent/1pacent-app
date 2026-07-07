@@ -14,6 +14,7 @@ export const AGGREGATE_TYPES = [
   "work_order",
   "property",
   "compliance_item",
+  "quote",
 ] as const;
 
 export type AggregateType = (typeof AGGREGATE_TYPES)[number];

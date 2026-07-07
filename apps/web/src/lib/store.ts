@@ -4,6 +4,7 @@ import {
   isUrgentCategory,
   projectState,
   transition,
+  validateQuoteSubmission,
   type ActorType,
   type EvidenceRecord,
   type PropertyComplianceProfile,
@@ -12,7 +13,20 @@ import {
   type RequestEvent,
   type RequestState,
 } from "@1pacent/core";
-import type { DataSource, PropertyDetail, PropertySummary } from "./data-types";
+import type {
+  AcceptQuoteResult,
+  DataSource,
+  DispatchQuotesResult,
+  PropertyDetail,
+  PropertySummary,
+  QuoteContext,
+  QuoteInvite,
+  QuoteSummary,
+  SallyConversationContext,
+  SallyExtractionInput,
+  SallyMemoryChunkView,
+  SallyMessageView,
+} from "./data-types";
 
 /**
  * In-memory demo repository. This is the seam where the Supabase-backed
@@ -140,11 +154,71 @@ const requests: DemoRequest[] = [
   },
 ];
 
-/** Demo stand-ins for hashed access_tokens rows. */
-const demoTokens: Record<string, { scope: "tenant_intake" | "landlord_approval"; aggregateId: string }> = {
-  "demo-intake": { scope: "tenant_intake", aggregateId: "prop-fitzroy" },
+/** Demo contacts: 3 seeded tradies + the demo tenant Sally talks to. */
+interface DemoContact {
+  id: string;
+  kind: "tenant" | "tradie" | "owner";
+  fullName: string;
+  email: string;
+}
+
+const contacts: DemoContact[] = [
+  { id: "contact-tenant-1", kind: "tenant", fullName: "Priya Nair", email: "mac@1pacent.com" },
+  { id: "contact-tradie-john", kind: "tradie", fullName: "John Snow", email: "mac@1pacent.com" },
+  { id: "contact-tradie-leo", kind: "tradie", fullName: "Leo Baker", email: "mac@1pacent.com" },
+  { id: "contact-tradie-sarah", kind: "tradie", fullName: "Sarah Mannis", email: "mac@1pacent.com" },
+];
+
+interface DemoSallyConversation {
+  id: string;
+  contactId: string;
+  propertyId: string;
+  status: "active" | "completed" | "abandoned";
+  requestId?: string;
+}
+const sallyConversations: DemoSallyConversation[] = [];
+
+interface DemoSallyMessage {
+  conversationId: string;
+  role: "tenant" | "sally";
+  content: string;
+}
+const sallyMessages: DemoSallyMessage[] = [];
+
+interface DemoMemoryChunk {
+  contactId: string;
+  propertyId: string | null;
+  scopeLevel: "contact" | "property";
+  chunkType: "fact" | "preference" | "summary";
+  content: string;
+  embedding: number[];
+}
+const sallyMemoryChunks: DemoMemoryChunk[] = [];
+
+interface DemoQuote {
+  id: string;
+  requestId: string;
+  tradieContactId: string;
+  status: "invited" | "submitted" | "declined" | "expired" | "accepted" | "not_selected";
+  quoteCents: number | null;
+  callOutFeeCents: number | null;
+  note: string | null;
+}
+const quotes: DemoQuote[] = [];
+
+/** Demo stand-ins for hashed access_tokens rows. Tradie-job tokens are issued
+ * dynamically by dispatchQuotesForRequest, so this map is mutable. */
+type DemoTokenScope = "tenant_intake" | "landlord_approval" | "tradie_job";
+const demoTokens: Record<string, { scope: DemoTokenScope; aggregateId: string; contactId?: string }> = {
+  "demo-intake": { scope: "tenant_intake", aggregateId: "prop-fitzroy", contactId: "contact-tenant-1" },
   "demo-approval": { scope: "landlord_approval", aggregateId: "req-fence" },
 };
+let demoTokenSeq = 0;
+function issueDemoToken(scope: DemoTokenScope, aggregateId: string, contactId?: string): string {
+  const token = `demo-${scope}-${++demoTokenSeq}`;
+  demoTokens[token] = { scope, aggregateId, contactId };
+  return token;
+}
 
 export function listProperties(): Array<
   DemoProperty & { compliance: PropertyComplianceStatus; openRequests: number }
@@ -337,4 +411,256 @@ export const demoData: DataSource = {
   async decideApprovalByToken(token: string, decision: "approve" | "decline") {
     return decideByTokenInternal(token, decision);
   },
+
+  async startSallyConversation(token: string): Promise<SallyConversationContext | null> {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tenant_intake" || !resolved.contactId) return null;
+    const property = properties.find((p) => p.id === resolved.aggregateId);
+    const contact = contacts.find((c) => c.id === resolved.contactId);
+    if (!property || !contact) return null;
+
+    let convo = sallyConversations.find((c) => c.contactId === contact.id && c.status === "active");
+    if (!convo) {
+      convo = {
+        id: `convo-${Math.random().toString(36).slice(2, 8)}`,
+        contactId: contact.id,
+        propertyId: property.id,
+        status: "active",
+      };
+      sallyConversations.push(convo);
+    }
+
+    return {
+      conversationId: convo.id,
+      contactId: contact.id,
+      propertyId: property.id,
+      propertyAddress: property.address,
+      propertySuburb: property.suburb,
+      tenantFirstName: contact.fullName.split(" ")[0],
+    };
+  },
+
+  async appendSallyMessage(conversationId: string, role: "tenant" | "sally", content: string): Promise<void> {
+    sallyMessages.push({ conversationId, role, content });
+  },
+
+  async getSallyMessages(conversationId: string): Promise<SallyMessageView[]> {
+    return sallyMessages.filter((m) => m.conversationId === conversationId).map((m) => ({ role: m.role, content: m.content }));
+  },
+
+  async retrieveSallyMemory(contactId: string, queryEmbedding: number[]): Promise<SallyMemoryChunkView[]> {
+    // Demo store: plain cosine similarity in JS (no pgvector to lean on).
+    const candidates = sallyMemoryChunks.filter((c) => c.contactId === contactId);
+    if (candidates.length === 0 || queryEmbedding.length === 0) return [];
+    const scored = candidates
+      .map((c) => ({ chunk: c, score: cosineSimilarity(c.embedding, queryEmbedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+    return scored.map((s) => ({ content: s.chunk.content }));
+  },
+
+  async writeSallyMemory(params): Promise<void> {
+    const { contactId, propertyId, chunks } = params;
+    for (const c of chunks) {
+      sallyMemoryChunks.push({
+        contactId,
+        propertyId: c.scopeLevel === "property" ? propertyId : null,
+        scopeLevel: c.scopeLevel,
+        chunkType: c.chunkType,
+        content: c.content,
+        embedding: c.embedding,
+      });
+    }
+  },
+
+  async completeSallyConversation(conversationId: string, extraction: SallyExtractionInput) {
+    const convo = sallyConversations.find((c) => c.id === conversationId);
+    if (!convo) return { ok: false as const, error: "Conversation not found." };
+    if (convo.status === "completed") {
+      return { ok: false as const, error: "This conversation has already been completed." };
+    }
+    const property = properties.find((p) => p.id === convo.propertyId);
+    if (!property) return { ok: false as const, error: "Property not found." };
+
+    const result = submitIntake({
+      propertyId: property.id,
+      title: extraction.title,
+      description: extraction.description,
+      category: extraction.category,
+    });
+    const request = requests.find((r) => r.id === result.requestId);
+    if (request) {
+      request.events[0] = { ...request.events[0]!, actorId: "sally" };
+    }
+    convo.status = "completed";
+    convo.requestId = result.requestId;
+    return { ok: true as const, ...result };
+  },
+
+  async dispatchQuotesForRequest(requestId: string): Promise<DispatchQuotesResult | { ok: false; error: string }> {
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return { ok: false, error: "Request not found." };
+    const current = requestState(request);
+    const result = transition(current, "request_quotes", "system");
+    if (!result.ok) return { ok: false, error: `Cannot request quotes from state "${current}".` };
+
+    const property = properties.find((p) => p.id === request.propertyId);
+    const tradies = contacts.filter((c) => c.kind === "tradie").slice(0, 3);
+    if (tradies.length === 0) return { ok: false, error: "No tradie contacts configured for this org." };
+
+    request.events.push({
+      eventType: "request_quotes",
+      actorType: "system",
+      actorId: "quote-dispatch",
+      at: new Date().toISOString(),
+    });
+
+    const invites: QuoteInvite[] = tradies.map((tradie) => {
+      const quoteId = `quote-${Math.random().toString(36).slice(2, 8)}`;
+      quotes.push({
+        id: quoteId,
+        requestId: request.id,
+        tradieContactId: tradie.id,
+        status: "invited",
+        quoteCents: null,
+        callOutFeeCents: null,
+        note: null,
+      });
+      const token = issueDemoToken("tradie_job", quoteId, tradie.id);
+      return { quoteId, tradieContactId: tradie.id, tradieName: tradie.fullName, tradieEmail: tradie.email, token };
+    });
+
+    return {
+      ok: true,
+      invites,
+      requestTitle: request.title,
+      requestDescription: request.description,
+      propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
+    };
+  },
+
+  async getQuoteContext(token: string): Promise<QuoteContext | null> {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_job") return null;
+    const quote = quotes.find((q) => q.id === resolved.aggregateId);
+    if (!quote) return null;
+    const request = requests.find((r) => r.id === quote.requestId);
+    if (!request) return null;
+    const property = properties.find((p) => p.id === request.propertyId);
+    const tradie = contacts.find((c) => c.id === quote.tradieContactId);
+    return {
+      quoteId: quote.id,
+      requestTitle: request.title,
+      requestDescription: request.description,
+      propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
+      tradieName: tradie?.fullName ?? "there",
+    };
+  },
+
+  async submitQuoteByToken(token: string, input: { quoteCents: number; callOutFeeCents: number; note?: string }) {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_job") {
+      return { ok: false as const, error: "This quote link is invalid or has expired." };
+    }
+    try {
+      validateQuoteSubmission({
+        quoteCents: input.quoteCents,
+        callOutFeeCents: input.callOutFeeCents,
+        note: input.note,
+      });
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : "Invalid quote amount." };
+    }
+    const quote = quotes.find((q) => q.id === resolved.aggregateId);
+    if (!quote) return { ok: false as const, error: "Quote not found." };
+    if (quote.status !== "invited") {
+      return { ok: false as const, error: "This quote has already been submitted or is no longer open." };
+    }
+    quote.status = "submitted";
+    quote.quoteCents = input.quoteCents;
+    quote.callOutFeeCents = input.callOutFeeCents;
+    quote.note = input.note ?? null;
+    return { ok: true as const };
+  },
+
+  async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
+    return quotes
+      .filter((q) => q.requestId === requestId)
+      .map((q) => {
+        const tradie = contacts.find((c) => c.id === q.tradieContactId);
+        return {
+          quoteId: q.id,
+          tradieContactId: q.tradieContactId,
+          tradieName: tradie?.fullName ?? "Unknown",
+          tradieEmail: tradie?.email ?? "",
+          status: q.status,
+          quoteCents: q.quoteCents,
+          callOutFeeCents: q.callOutFeeCents,
+          note: q.note,
+        };
+      });
+  },
+
+  async acceptQuote(requestId: string, quoteId: string): Promise<AcceptQuoteResult> {
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return { ok: false, error: "Request not found." };
+    const current = requestState(request);
+    const result = transition(current, "accept_quote", "landlord");
+    if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
+
+    const requestQuotes = quotes.filter((q) => q.requestId === requestId);
+    const accepted = requestQuotes.find((q) => q.id === quoteId);
+    if (!accepted) return { ok: false, error: "Quote not found for this request." };
+    if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
+
+    request.events.push({
+      eventType: "accept_quote",
+      actorType: "landlord",
+      actorId: "dashboard",
+      at: new Date().toISOString(),
+    });
+    accepted.status = "accepted";
+    const declined = requestQuotes.filter((q) => q.id !== quoteId);
+    declined.forEach((q) => (q.status = "not_selected"));
+
+    const acceptedContact = contacts.find((c) => c.id === accepted.tradieContactId);
+    return {
+      ok: true,
+      state: result.state,
+      accepted: {
+        tradieName: acceptedContact?.fullName ?? "",
+        tradieEmail: acceptedContact?.email ?? "",
+        quoteCents: accepted.quoteCents ?? 0,
+        callOutFeeCents: accepted.callOutFeeCents ?? 0,
+      },
+      declined: declined.map((q) => {
+        const c = contacts.find((x) => x.id === q.tradieContactId);
+        return { tradieName: c?.fullName ?? "", tradieEmail: c?.email ?? "" };
+      }),
+    };
+  },
+
+  async getTradieTrustSummaries(tradieContactIds: string[]) {
+    // Demo store seeds no completed job history — every tradie reads as
+    // "unproven" until real work_orders with invoice_cents exist.
+    const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
+    for (const id of tradieContactIds) {
+      summaries[id] = { completedJobs: 0, avgAbsVariancePct: null };
+    }
+    return summaries;
+  },
 };
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const len = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < len; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}

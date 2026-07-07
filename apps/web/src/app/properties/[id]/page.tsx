@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { formatCents } from "@1pacent/core";
+import { classifyTrust, formatCents } from "@1pacent/core";
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
+import { QuotesPanel, type QuotesPanelQuote } from "./quotes-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -13,8 +14,37 @@ function formatDate(d: Date | null): string {
 
 export default async function PropertyPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const property = await (await getData()).getProperty(id);
+  const data = await getData();
+  const property = await data.getProperty(id);
   if (!property) notFound();
+
+  const quotingRequests = property.requests.filter((r) => r.state === "quoting");
+  const quotesByRequest = new Map<string, QuotesPanelQuote[]>();
+  if (quotingRequests.length > 0) {
+    const quotesPerRequest = await Promise.all(
+      quotingRequests.map((r) => data.listQuotesForRequest(r.id)),
+    );
+    const allTradieIds = [...new Set(quotesPerRequest.flat().map((q) => q.tradieContactId))];
+    const trust = await data.getTradieTrustSummaries(allTradieIds);
+    quotingRequests.forEach((r, i) => {
+      quotesByRequest.set(
+        r.id,
+        quotesPerRequest[i]!.map((q) => ({
+          quoteId: q.quoteId,
+          tradieName: q.tradieName,
+          status: q.status,
+          note: q.note,
+          quoteDisplay: q.quoteCents !== null ? formatCents(q.quoteCents) : null,
+          calloutDisplay: q.callOutFeeCents !== null ? formatCents(q.callOutFeeCents) : null,
+          totalDisplay:
+            q.quoteCents !== null && q.callOutFeeCents !== null
+              ? formatCents(q.quoteCents + q.callOutFeeCents)
+              : null,
+          trustTier: classifyTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+        })),
+      );
+    });
+  }
 
   return (
     <div>
@@ -96,6 +126,9 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
                 </li>
               ))}
             </ol>
+            {r.state === "quoting" && quotesByRequest.has(r.id) && (
+              <QuotesPanel requestId={r.id} quotes={quotesByRequest.get(r.id)!} />
+            )}
           </div>
         ))}
       </div>

@@ -1,5 +1,5 @@
 import { getData } from "@/lib/data";
-import { IntakeForm } from "./intake-form";
+import { SallyChat } from "./sally-chat";
 
 export const dynamic = "force-dynamic";
 
@@ -25,10 +25,10 @@ export default async function TenantIntakePage({ params }: { params: Promise<{ t
         {context.property.address}, {context.property.suburb}
       </h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
-        Takes under 90 seconds. Urgent problems (no hot water, gas leaks, flooding) are
-        fast-tracked automatically under Victorian rental law.
+        Chat with Sally below — urgent problems (no hot water, gas leaks, flooding) are fast-tracked
+        automatically under Victorian rental law.
       </p>
-      <IntakeForm token={token} />
+      <SallyChat token={token} />
     </div>
   );
 }

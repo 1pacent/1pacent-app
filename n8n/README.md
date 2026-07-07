@@ -6,6 +6,9 @@ the workflows are finally under version control. See
 immediate server actions, and the keep/port/park/discard disposition of
 all 190 workflows.
 
+`workflows/` holds the new, individually-maintained `1PACENT-SALLY-*`
+workflows built for Sally's quote marketplace — see `workflows/README.md`.
+
 Rules going forward:
 
 - n8n is an **internal worker** — no public webhook ingress. Every

@@ -1,24 +1,12 @@
 "use server";
 
-import { REQUEST_CATEGORIES, type RequestCategory } from "@1pacent/core";
-import { getData } from "@/lib/data";
+import { sendSallyMessage, type SendSallyMessageResult } from "@/lib/sally";
 
-export interface IntakeResult {
-  ok: boolean;
-  error?: string;
-  requestId?: string;
-  urgent?: boolean;
-  state?: string;
-}
+const MAX_MESSAGE_LENGTH = 2000;
 
-export async function lodgeRequest(token: string, formData: FormData): Promise<IntakeResult> {
-  const title = String(formData.get("title") ?? "").trim();
-  const description = String(formData.get("description") ?? "").trim();
-  const category = String(formData.get("category") ?? "other") as RequestCategory;
-
-  if (title.length < 3) return { ok: false, error: "Please describe the issue briefly in the title." };
-  if (!REQUEST_CATEGORIES.includes(category)) return { ok: false, error: "Please pick a category." };
-
-  const data = await getData();
-  return data.lodgeIntake(token, { title, description, category });
+export async function sendMessage(token: string, message: string): Promise<SendSallyMessageResult> {
+  const trimmed = message.trim();
+  if (!trimmed) return { ok: false, error: "Type a message first." };
+  if (trimmed.length > MAX_MESSAGE_LENGTH) return { ok: false, error: "That message is too long." };
+  return sendSallyMessage(token, trimmed);
 }

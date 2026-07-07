@@ -4,8 +4,10 @@ import {
   evaluateProperty,
   hashToken,
   isUrgentCategory,
+  issueToken,
   projectState,
   transition,
+  validateQuoteSubmission,
   validateToken,
   REQUEST_EVENTS,
   type ActorType,
@@ -17,12 +19,21 @@ import {
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
 import type {
+  AcceptQuoteResult,
   ApprovalContext,
   DataSource,
+  DispatchQuotesResult,
   IntakeContext,
   PropertyDetail,
   PropertySummary,
+  QuoteContext,
+  QuoteInvite,
+  QuoteSummary,
   RequestView,
+  SallyConversationContext,
+  SallyExtractionInput,
+  SallyMemoryChunkView,
+  SallyMessageView,
 } from "./data-types";
 
 /**
@@ -309,13 +320,516 @@ export const supabaseData: DataSource = {
     await db.from("access_tokens").update({ used_at: new Date().toISOString() }).eq("id", resolved.id);
     return { ok: true as const, state: result.state };
   },
+
+  async startSallyConversation(token: string): Promise<SallyConversationContext | null> {
+    const resolved = await resolveToken(token, "tenant_intake");
+    if (!resolved?.aggregate_id || !resolved.contact_id) return null;
+    const db = serviceClient();
+    const { data: prop } = await db
+      .from("properties")
+      .select("id, org_id, address_line1, suburb, state, postcode")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!prop) return null;
+    const { data: contact } = await db
+      .from("contacts")
+      .select("full_name")
+      .eq("id", resolved.contact_id)
+      .maybeSingle();
+
+    const { data: existing } = await db
+      .from("sally_conversations")
+      .select("id")
+      .eq("contact_id", resolved.contact_id)
+      .eq("status", "active")
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    let conversationId = existing?.id as string | undefined;
+    if (!conversationId) {
+      const { data: created, error } = await db
+        .from("sally_conversations")
+        .insert({ org_id: prop.org_id, contact_id: resolved.contact_id, property_id: prop.id })
+        .select("id")
+        .single();
+      if (error) throw new Error(`startSallyConversation: ${error.message}`);
+      conversationId = created.id as string;
+    }
+
+    return {
+      conversationId,
+      contactId: resolved.contact_id,
+      propertyId: prop.id,
+      propertyAddress: prop.address_line1,
+      propertySuburb: `${prop.suburb} ${prop.state} ${prop.postcode}`,
+      tenantFirstName: (contact?.full_name as string | undefined)?.split(" ")[0],
+    };
+  },
+
+  async appendSallyMessage(conversationId: string, role: "tenant" | "sally", content: string): Promise<void> {
+    const db = serviceClient();
+    const { data: convo } = await db
+      .from("sally_conversations")
+      .select("org_id")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!convo) throw new Error("appendSallyMessage: conversation not found");
+    const { error } = await db
+      .from("sally_messages")
+      .insert({ org_id: convo.org_id, conversation_id: conversationId, role, content });
+    if (error) throw new Error(`appendSallyMessage: ${error.message}`);
+  },
+
+  async getSallyMessages(conversationId: string): Promise<SallyMessageView[]> {
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("sally_messages")
+      .select("role, content")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(`getSallyMessages: ${error.message}`);
+    return (data ?? []) as SallyMessageView[];
+  },
+
+  async retrieveSallyMemory(contactId: string, queryEmbedding: number[]): Promise<SallyMemoryChunkView[]> {
+    if (queryEmbedding.length === 0) return [];
+    const db = serviceClient();
+    const { data, error } = await db.rpc("match_sally_memory", {
+      query_embedding: `[${queryEmbedding.join(",")}]`,
+      match_contact_id: contactId,
+      match_count: 5,
+    });
+    if (error) throw new Error(`retrieveSallyMemory: ${error.message}`);
+    return ((data ?? []) as Array<{ content: string }>).map((r) => ({ content: r.content }));
+  },
+
+  async writeSallyMemory(params): Promise<void> {
+    const { conversationId, contactId, propertyId, chunks } = params;
+    if (chunks.length === 0) return;
+    const db = serviceClient();
+    const { data: convo } = await db
+      .from("sally_conversations")
+      .select("org_id")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!convo) throw new Error("writeSallyMemory: conversation not found");
+    const rows = chunks.map((c) => ({
+      org_id: convo.org_id,
+      contact_id: contactId,
+      property_id: c.scopeLevel === "property" ? propertyId : null,
+      scope_level: c.scopeLevel,
+      chunk_type: c.chunkType,
+      content: c.content,
+      embedding: `[${c.embedding.join(",")}]`,
+      source_conversation_id: conversationId,
+    }));
+    const { error } = await db.from("sally_memory_chunks").insert(rows);
+    if (error) throw new Error(`writeSallyMemory: ${error.message}`);
+  },
+
+  async completeSallyConversation(conversationId: string, extraction: SallyExtractionInput) {
+    const db = serviceClient();
+    const { data: convo } = await db
+      .from("sally_conversations")
+      .select("id, org_id, contact_id, property_id, status")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!convo) return { ok: false as const, error: "Conversation not found." };
+    if (convo.status === "completed") {
+      return { ok: false as const, error: "This conversation has already been completed." };
+    }
+
+    const { data: prop } = await db
+      .from("properties")
+      .select("id, org_id, auto_approve_cap_cents")
+      .eq("id", convo.property_id)
+      .maybeSingle();
+    if (!prop) return { ok: false as const, error: "Property not found." };
+
+    const urgent = isUrgentCategory(extraction.category);
+    const decision = decideApproval({
+      category: extraction.category,
+      estimateCents: 0,
+      policy: { autoApproveCapCents: Number(prop.auto_approve_cap_cents) },
+    });
+    const followUp: RequestEvent =
+      urgent && decision.outcome === "auto_approved" ? "auto_approve" : "request_approval";
+    const state = projectState([
+      { eventType: "triage", actorType: "system" },
+      { eventType: followUp, actorType: "system" },
+    ]);
+
+    const { data: req, error: reqError } = await db
+      .from("maintenance_requests")
+      .insert({
+        org_id: prop.org_id,
+        property_id: prop.id,
+        title: extraction.title,
+        description: extraction.description,
+        category: extraction.category,
+        is_urgent: urgent,
+        status: state,
+      })
+      .select("id")
+      .single();
+    if (reqError) return { ok: false as const, error: `Could not save the request: ${reqError.message}` };
+
+    const base = {
+      org_id: prop.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      actor_type: "system",
+    };
+    const { error: evError } = await db.from("events").insert([
+      {
+        ...base,
+        event_type: "triage",
+        actor_id: "sally",
+        payload: { source: "sally_conversation", conversation_id: conversationId },
+        ai_meta: extraction.aiMeta,
+      },
+      {
+        ...base,
+        event_type: followUp,
+        actor_id: "approval-rules",
+        payload: {
+          note:
+            followUp === "auto_approve"
+              ? "Urgent bypass (VIC urgent repairs list)"
+              : "Routed to landlord approval",
+        },
+      },
+    ]);
+    if (evError) return { ok: false as const, error: `Could not record events: ${evError.message}` };
+
+    await db
+      .from("sally_conversations")
+      .update({ status: "completed", ended_at: new Date().toISOString(), request_id: req.id })
+      .eq("id", conversationId);
+
+    return { ok: true as const, requestId: req.id, state, urgent };
+  },
+
+  async dispatchQuotesForRequest(requestId: string): Promise<DispatchQuotesResult | { ok: false; error: string }> {
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, title, description, status, property_id")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+
+    const current = req.status as RequestState;
+    const result = transition(current, "request_quotes", "system");
+    if (!result.ok) return { ok: false, error: `Cannot request quotes from state "${current}".` };
+
+    const { data: prop } = await db
+      .from("properties")
+      .select("address_line1, suburb, state, postcode")
+      .eq("id", req.property_id)
+      .maybeSingle();
+    const propertyAddress = prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "";
+
+    const { data: tradies } = await db
+      .from("contacts")
+      .select("id, full_name, email")
+      .eq("org_id", req.org_id)
+      .eq("kind", "tradie")
+      .order("created_at", { ascending: true })
+      .limit(3);
+    if (!tradies || tradies.length === 0) {
+      return { ok: false, error: "No tradie contacts configured for this org." };
+    }
+
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "request_quotes",
+      actor_type: "system",
+      actor_id: "quote-dispatch",
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+
+    const invites: QuoteInvite[] = [];
+    for (const tradie of tradies) {
+      const { data: quote, error: quoteErr } = await db
+        .from("quotes")
+        .insert({ org_id: req.org_id, request_id: req.id, tradie_contact_id: tradie.id, status: "invited" })
+        .select("id")
+        .single();
+      if (quoteErr || !quote) continue;
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "quote",
+        aggregate_id: quote.id,
+        event_type: "quote_invited",
+        actor_type: "system",
+        actor_id: "quote-dispatch",
+      });
+      const issued = issueToken("tradie_job");
+      await db.from("access_tokens").insert({
+        org_id: req.org_id,
+        token_hash: issued.tokenHash,
+        scope: "tradie_job",
+        aggregate_id: quote.id,
+        contact_id: tradie.id,
+        expires_at: issued.expiresAt.toISOString(),
+      });
+      invites.push({
+        quoteId: quote.id,
+        tradieContactId: tradie.id,
+        tradieName: tradie.full_name,
+        tradieEmail: tradie.email ?? "",
+        token: issued.token,
+      });
+    }
+
+    return { ok: true, invites, requestTitle: req.title, requestDescription: req.description, propertyAddress };
+  },
+
+  async getQuoteContext(token: string): Promise<QuoteContext | null> {
+    const resolved = await resolveToken(token, "tradie_job");
+    if (!resolved?.aggregate_id) return null;
+    const db = serviceClient();
+    const { data: quote } = await db
+      .from("quotes")
+      .select("id, request_id, tradie_contact_id")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!quote) return null;
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("title, description, property_id")
+      .eq("id", quote.request_id)
+      .maybeSingle();
+    if (!req) return null;
+    const { data: prop } = await db
+      .from("properties")
+      .select("address_line1, suburb, state, postcode")
+      .eq("id", req.property_id)
+      .maybeSingle();
+    const { data: tradie } = await db
+      .from("contacts")
+      .select("full_name")
+      .eq("id", quote.tradie_contact_id)
+      .maybeSingle();
+    return {
+      quoteId: quote.id,
+      requestTitle: req.title,
+      requestDescription: req.description,
+      propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+      tradieName: (tradie?.full_name as string | undefined) ?? "there",
+    };
+  },
+
+  async submitQuoteByToken(token: string, input: { quoteCents: number; callOutFeeCents: number; note?: string }) {
+    const resolved = await resolveToken(token, "tradie_job");
+    if (!resolved?.aggregate_id) {
+      return { ok: false as const, error: "This quote link is invalid or has expired." };
+    }
+    try {
+      validateQuoteSubmission({
+        quoteCents: input.quoteCents,
+        callOutFeeCents: input.callOutFeeCents,
+        note: input.note,
+      });
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : "Invalid quote amount." };
+    }
+
+    const db = serviceClient();
+    const { data: quote } = await db
+      .from("quotes")
+      .select("id, org_id, status")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!quote) return { ok: false as const, error: "Quote not found." };
+    if (quote.status !== "invited") {
+      return { ok: false as const, error: "This quote has already been submitted or is no longer open." };
+    }
+
+    const { error } = await db
+      .from("quotes")
+      .update({
+        status: "submitted",
+        quote_cents: input.quoteCents,
+        call_out_fee_cents: input.callOutFeeCents,
+        note: input.note ?? null,
+        submitted_at: new Date().toISOString(),
+      })
+      .eq("id", quote.id);
+    if (error) return { ok: false as const, error: `Could not save your quote: ${error.message}` };
+
+    await db.from("events").insert({
+      org_id: quote.org_id,
+      aggregate_type: "quote",
+      aggregate_id: quote.id,
+      event_type: "quote_submitted",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+    });
+    await db.from("access_tokens").update({ used_at: new Date().toISOString() }).eq("id", resolved.id);
+    return { ok: true as const };
+  },
+
+  async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("quotes")
+      .select("id, tradie_contact_id, status, quote_cents, call_out_fee_cents, note, contacts(full_name, email)")
+      .eq("request_id", requestId)
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(`listQuotesForRequest: ${error.message}`);
+    return (data as unknown as QuoteJoinRow[]).map(toQuoteSummary);
+  },
+
+  async acceptQuote(requestId: string, quoteId: string): Promise<AcceptQuoteResult> {
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+
+    const current = req.status as RequestState;
+    const result = transition(current, "accept_quote", "landlord");
+    if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
+
+    const { data: allQuotes } = await db
+      .from("quotes")
+      .select("id, tradie_contact_id, status, quote_cents, call_out_fee_cents, contacts(full_name, email)")
+      .eq("request_id", requestId);
+    const rows = (allQuotes ?? []) as unknown as QuoteJoinRow[];
+    const accepted = rows.find((q) => q.id === quoteId);
+    if (!accepted) return { ok: false, error: "Quote not found for this request." };
+    if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
+
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "accept_quote",
+      actor_type: "landlord",
+      actor_id: "dashboard",
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+
+    await db.from("quotes").update({ status: "accepted" }).eq("id", accepted.id);
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "quote",
+      aggregate_id: accepted.id,
+      event_type: "quote_accepted",
+      actor_type: "landlord",
+      actor_id: "dashboard",
+    });
+
+    await db.from("work_orders").insert({
+      org_id: req.org_id,
+      request_id: req.id,
+      tradie_contact_id: accepted.tradie_contact_id,
+      status: "scheduled",
+      quote_cents: accepted.quote_cents,
+      call_out_fee_cents: accepted.call_out_fee_cents,
+      quote_id: accepted.id,
+    });
+
+    const declined = rows.filter((q) => q.id !== quoteId);
+    for (const q of declined) {
+      await db.from("quotes").update({ status: "not_selected" }).eq("id", q.id);
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "quote",
+        aggregate_id: q.id,
+        event_type: "quote_declined",
+        actor_type: "landlord",
+        actor_id: "dashboard",
+      });
+    }
+
+    const acceptedContact = normalizeContact(accepted.contacts);
+    return {
+      ok: true,
+      state: result.state,
+      accepted: {
+        tradieName: acceptedContact?.full_name ?? "",
+        tradieEmail: acceptedContact?.email ?? "",
+        quoteCents: accepted.quote_cents ?? 0,
+        callOutFeeCents: accepted.call_out_fee_cents ?? 0,
+      },
+      declined: declined.map((q) => {
+        const c = normalizeContact(q.contacts);
+        return { tradieName: c?.full_name ?? "", tradieEmail: c?.email ?? "" };
+      }),
+    };
+  },
+
+  async getTradieTrustSummaries(tradieContactIds: string[]) {
+    if (tradieContactIds.length === 0) return {};
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("tradie_trust_scores")
+      .select("tradie_contact_id, completed_jobs, avg_abs_variance_pct")
+      .in("tradie_contact_id", tradieContactIds);
+    if (error) throw new Error(`getTradieTrustSummaries: ${error.message}`);
+    const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
+    for (const row of (data ?? []) as Array<{
+      tradie_contact_id: string;
+      completed_jobs: number;
+      avg_abs_variance_pct: number | null;
+    }>) {
+      summaries[row.tradie_contact_id] = {
+        completedJobs: row.completed_jobs,
+        avgAbsVariancePct: row.avg_abs_variance_pct,
+      };
+    }
+    return summaries;
+  },
 };
+
+interface ContactJoin {
+  full_name: string;
+  email: string | null;
+}
+
+interface QuoteJoinRow {
+  id: string;
+  tradie_contact_id: string;
+  status: string;
+  quote_cents: number | null;
+  call_out_fee_cents: number | null;
+  note?: string | null;
+  contacts: ContactJoin | ContactJoin[] | null;
+}
+
+function normalizeContact(joined: ContactJoin | ContactJoin[] | null): ContactJoin | null {
+  if (!joined) return null;
+  return Array.isArray(joined) ? (joined[0] ?? null) : joined;
+}
+
+function toQuoteSummary(row: QuoteJoinRow): QuoteSummary {
+  const contact = normalizeContact(row.contacts);
+  return {
+    quoteId: row.id,
+    tradieContactId: row.tradie_contact_id,
+    tradieName: contact?.full_name ?? "Unknown",
+    tradieEmail: contact?.email ?? "",
+    status: row.status,
+    quoteCents: row.quote_cents,
+    callOutFeeCents: row.call_out_fee_cents,
+    note: row.note ?? null,
+  };
+}
 
 interface TokenRow {
   id: string;
   token_hash: string;
   scope: TokenScope;
   aggregate_id: string | null;
+  contact_id: string | null;
   expires_at: string;
   used_at: string | null;
 }
@@ -324,7 +838,7 @@ async function resolveToken(rawToken: string, expectedScope: TokenScope): Promis
   const db = serviceClient();
   const { data } = await db
     .from("access_tokens")
-    .select("id, token_hash, scope, aggregate_id, expires_at, used_at")
+    .select("id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
     .eq("token_hash", hashToken(rawToken))
     .maybeSingle();
   if (!data) return null;

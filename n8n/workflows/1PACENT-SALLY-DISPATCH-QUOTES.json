@@ -1,0 +1,120 @@
+{
+  "name": "1PACENT-SALLY-DISPATCH-QUOTES",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "1pacent-sally-dispatch-quotes",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "n1-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "oBZ6GRQ3zAFbDeqs",
+          "name": "1Pacent Internal Auth"
+        }
+      },
+      "webhookId": "d2f94175-94ad-47af-9a0d-69135dfaa1fb"
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "body.invites",
+        "options": {}
+      },
+      "id": "n2-split",
+      "name": "Split Invites",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.resend.com/emails",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ from: \"1Pacent <onboarding@resend.dev>\", to: [$json.tradieEmail], subject: \"New job needing a quote: \" + $node[\"Webhook\"].json.body.request.title, html: \"<p>Hi \" + $json.tradieName + \",</p><p>A new job needs a quote at \" + $node[\"Webhook\"].json.body.property.address + \":</p><p><strong>\" + $node[\"Webhook\"].json.body.request.title + \"</strong></p><p>\" + $node[\"Webhook\"].json.body.request.description + \"</p><p><a href=\\\"\" + $json.quoteUrl + \"\\\">Submit your quote</a></p>\" }) }}",
+        "options": {}
+      },
+      "id": "n3-send",
+      "name": "Send Quote Request Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "d1WYNVTKjTiVqp0y",
+          "name": "1Pacent Resend"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {}
+      },
+      "id": "n4-respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Split Invites",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Invites": {
+      "main": [
+        [
+          {
+            "node": "Send Quote Request Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Quote Request Email": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {}
+}

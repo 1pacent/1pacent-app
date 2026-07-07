@@ -7,3 +7,5 @@ export * from "./requests/urgency";
 export * from "./approvals/rules";
 export * from "./compliance/catalogue";
 export * from "./compliance/engine";
+export * from "./quotes/rules";
+export * from "./trust/scoring";

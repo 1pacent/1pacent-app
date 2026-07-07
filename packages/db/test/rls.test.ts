@@ -46,11 +46,33 @@ describe.skipIf(!url)("row-level security", () => {
               values (${orgA}, '1 Alpha St', 'Fitzroy', '3065')`;
     await sql`insert into properties (org_id, address_line1, suburb, postcode)
               values (${orgB}, '2 Beta Ave', 'Richmond', '3121')`;
+
+    // Sally/quotes fixtures — org A only, used to prove org B can't see them.
+    const [tradieA] = await sql`insert into contacts (org_id, kind, full_name, email)
+              values (${orgA}, 'tradie', 'Test Tradie', 'tradie@example.com') returning id`;
+    const [tenantA] = await sql`insert into contacts (org_id, kind, full_name, email)
+              values (${orgA}, 'tenant', 'Test Tenant', 'tenant@example.com') returning id`;
+    const [requestA] = await sql`insert into maintenance_requests (org_id, property_id, title)
+              values (${orgA}, (select id from properties where org_id = ${orgA} limit 1), 'Leaking tap')
+              returning id`;
+    await sql`insert into quotes (org_id, request_id, tradie_contact_id, quote_cents, call_out_fee_cents)
+              values (${orgA}, ${requestA!.id}, ${tradieA!.id}, 15000, 8000)`;
+    const [propA] = await sql`select id from properties where org_id = ${orgA} limit 1`;
+    const [convoA] = await sql`insert into sally_conversations (org_id, contact_id, property_id, request_id)
+              values (${orgA}, ${tenantA!.id}, ${propA!.id}, ${requestA!.id}) returning id`;
+    const zeroVector = `[${"0,".repeat(1535)}0]`;
+    await sql`insert into sally_memory_chunks
+              (org_id, contact_id, scope_level, chunk_type, content, embedding, source_conversation_id)
+              values (${orgA}, ${tenantA!.id}, 'contact', 'fact', 'Prefers morning access',
+                      ${zeroVector}::vector, ${convoA!.id})`;
   });
 
   afterAll(async () => {
     if (!sql) return;
     await sql.unsafe(`
+      delete from sally_memory_chunks; delete from sally_messages;
+      delete from sally_conversations; delete from quotes;
+      delete from maintenance_requests; delete from contacts;
       delete from properties; delete from org_members; delete from orgs;
     `);
     await sql.end();
@@ -90,6 +112,32 @@ describe.skipIf(!url)("row-level security", () => {
       return tx`select * from properties`;
     });
     expect(rows).toHaveLength(0);
+  });
+
+  it("org B cannot see org A's quotes", async () => {
+    const rows = await asUser(userB, (tx) => tx`select id from quotes`);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("org A sees its own quote", async () => {
+    const rows = await asUser(userA, (tx) => tx`select quote_cents from quotes`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.quote_cents).toBe(15000);
+  });
+
+  it("org B cannot see org A's Sally conversations or memory", async () => {
+    const convos = await asUser(userB, (tx) => tx`select id from sally_conversations`);
+    const chunks = await asUser(userB, (tx) => tx`select id from sally_memory_chunks`);
+    expect(convos).toHaveLength(0);
+    expect(chunks).toHaveLength(0);
+  });
+
+  it("org A sees its own Sally conversation and memory chunk", async () => {
+    const convos = await asUser(userA, (tx) => tx`select id from sally_conversations`);
+    const chunks = await asUser(userA, (tx) => tx`select content from sally_memory_chunks`);
+    expect(convos).toHaveLength(1);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.content).toBe("Prefers morning access");
   });
 
   it("events are append-only even for privileged writers", async () => {

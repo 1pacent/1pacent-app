@@ -69,3 +69,22 @@ docker-network IPs.
 - n8n's remaining role is exactly what it's good at: internal, scheduled,
   deterministic side effects (legislation monitor, notification fan-out)
   with **no public ingress**.
+
+## Addendum (2026-07-07): two new workflows added
+
+`1PACENT-SALLY-DISPATCH-QUOTES` and `1PACENT-SALLY-DISPATCH-NOTIFY` were
+created on this instance via the Public API, following exactly the pattern
+this audit recommended: header-auth webhooks, no reasoning, no DB writes,
+API-tier-triggered only. See `n8n/workflows/README.md` for full detail.
+
+Before creating them, this instance's workflow list was checked via the
+Public API for path collisions with the ~120 existing workflows (the
+`X-N8N-API-KEY` used only had visibility into 14 workflows — the
+`1Pacent-*`/`TRADIE-*`/`RENTAL-*` workflows from this audit belong to a
+*different* n8n user account on the same instance, being manually
+re-imported by the project owner at time of writing; n8n scopes workflow
+visibility per-owning-user even on Community edition, not per-instance). No
+collision was found against the visible set. Whoever finishes the
+re-import of the audited workflows should independently confirm neither
+`/webhook/1pacent-sally-dispatch-quotes` nor
+`/webhook/1pacent-sally-dispatch-notify` collides with a re-imported path.
