@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { formatCents } from "@1pacent/core";
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
-import { getProperty } from "@/lib/store";
+import { getData } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +13,7 @@ function formatDate(d: Date | null): string {
 
 export default async function PropertyPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const property = getProperty(id);
+  const property = await (await getData()).getProperty(id);
   if (!property) notFound();
 
   return (

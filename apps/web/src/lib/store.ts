@@ -12,6 +12,7 @@ import {
   type RequestEvent,
   type RequestState,
 } from "@1pacent/core";
+import type { DataSource, PropertyDetail, PropertySummary } from "./data-types";
 
 /**
  * In-memory demo repository. This is the seam where the Supabase-backed
@@ -239,8 +240,7 @@ export function submitIntake(input: IntakeInput): { requestId: string; state: Re
   return { requestId: request.id, state: requestState(request), urgent };
 }
 
-/** Landlord approval via magic link: identity comes from the token, never the body. */
-export function decideByToken(
+function decideByTokenInternal(
   token: string,
   decision: "approve" | "decline",
 ): { ok: true; state: RequestState } | { ok: false; error: string } {
@@ -264,3 +264,77 @@ export function decideByToken(
   });
   return { ok: true, state: result.state };
 }
+
+/** Demo store exposed through the shared DataSource surface (see data.ts). */
+export const demoData: DataSource = {
+  async listProperties(): Promise<PropertySummary[]> {
+    return listProperties().map((p) => ({
+      id: p.id,
+      address: p.address,
+      suburb: p.suburb,
+      autoApproveCapCents: p.autoApproveCapCents,
+      compliance: p.compliance,
+      openRequests: p.openRequests,
+    }));
+  },
+
+  async getProperty(id: string): Promise<PropertyDetail | null> {
+    const p = getProperty(id);
+    if (!p) return null;
+    return {
+      id: p.id,
+      address: p.address,
+      suburb: p.suburb,
+      autoApproveCapCents: p.autoApproveCapCents,
+      compliance: p.compliance,
+      openRequests: p.requests.filter((r) => !["closed", "cancelled"].includes(r.state)).length,
+      requests: p.requests.map((r) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        estimateCents: r.estimateCents,
+        state: r.state,
+        events: r.events.map((e) => ({ eventType: e.eventType, actorType: e.actorType, note: e.note })),
+      })),
+    };
+  },
+
+  async getIntakeContext(token: string) {
+    const resolved = resolveDemoToken(token);
+    if (resolved?.scope !== "tenant_intake") return null;
+    const p = getProperty(resolved.aggregateId);
+    if (!p) return null;
+    return { property: { id: p.id, address: p.address, suburb: p.suburb } };
+  },
+
+  async lodgeIntake(token: string, input) {
+    const resolved = resolveDemoToken(token);
+    if (resolved?.scope !== "tenant_intake") {
+      return { ok: false as const, error: "This link is invalid or has expired. Ask your rental provider for a new one." };
+    }
+    const result = submitIntake({ propertyId: resolved.aggregateId, ...input });
+    return { ok: true as const, ...result };
+  },
+
+  async getApprovalContext(token: string) {
+    const resolved = resolveDemoToken(token);
+    if (resolved?.scope !== "landlord_approval") return null;
+    const r = getRequest(resolved.aggregateId);
+    if (!r || !r.property) return null;
+    return {
+      request: {
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        estimateCents: r.estimateCents,
+        address: `${r.property.address}, ${r.property.suburb}`,
+      },
+    };
+  },
+
+  async decideApprovalByToken(token: string, decision: "approve" | "decline") {
+    return decideByTokenInternal(token, decision);
+  },
+};

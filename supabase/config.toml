@@ -1,0 +1,7 @@
+# Supabase project linkage (project: yxgvvbfsbvykmsqzuzxi, Sydney).
+# Migrations in supabase/migrations are the deployable mirror of
+# packages/db/migrations — keep the two in lockstep.
+project_id = "yxgvvbfsbvykmsqzuzxi"
+
+[db]
+major_version = 15

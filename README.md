@@ -34,12 +34,28 @@ Demo routes (seeded data, no DB needed):
 - `/r/demo-intake` — tenant repair intake (urgent categories fast-track)
 - `/a/demo-approval` — landlord one-tap approval link
 
-## Database
+## Database (Supabase project `yxgvvbfsbvykmsqzuzxi`, Sydney)
+
+Migrations live twice, deliberately in lockstep: `packages/db/migrations`
+(canonical, applied by our runner + RLS tests) and `supabase/migrations`
+(the mirror Supabase's GitHub integration deploys).
 
 ```bash
 DATABASE_URL=postgres://... pnpm --filter @1pacent/db migrate   # apply migrations + VIC seed
+DATABASE_URL=postgres://... pnpm --filter @1pacent/db seed      # demo org + prints live /r and /a tokens
 DATABASE_URL=postgres://... pnpm --filter @1pacent/db test      # RLS policy tests (disposable DB!)
 ```
+
+The web app switches from demo data to Supabase as soon as
+`NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are set (see
+`apps/web/.env.example`; `DATA_SOURCE=demo` forces demo mode). Keys are
+secrets — set them in Vercel/CI env, never commit them.
+
+## n8n
+
+The legacy workflow estate (190 workflows) is versioned under
+`n8n/export/` and reviewed in `docs/N8N_WORKFLOW_AUDIT.md` — read that
+before touching the VPS; it lists urgent lockdown actions.
 
 ## Rules of the road
 

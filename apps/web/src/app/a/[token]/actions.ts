@@ -1,7 +1,8 @@
 "use server";
 
-import { decideByToken } from "@/lib/store";
+import { getData } from "@/lib/data";
 
 export async function decide(token: string, decision: "approve" | "decline") {
-  return decideByToken(token, decision);
+  const data = await getData();
+  return data.decideApprovalByToken(token, decision);
 }

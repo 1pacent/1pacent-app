@@ -1,16 +1,14 @@
 import { formatCents } from "@1pacent/core";
-import { getRequest, resolveDemoToken } from "@/lib/store";
+import { getData } from "@/lib/data";
 import { ApprovalCard } from "./approval-card";
 
 export const dynamic = "force-dynamic";
 
 export default async function ApprovalPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const resolved = resolveDemoToken(token);
-  const request =
-    resolved?.scope === "landlord_approval" ? getRequest(resolved.aggregateId) : null;
+  const context = await (await getData()).getApprovalContext(token);
 
-  if (!request || !request.property) {
+  if (!context) {
     return (
       <div className="mx-auto max-w-md py-12 text-center">
         <h1 className="text-xl font-semibold text-slate-900">This approval link isn&apos;t active</h1>
@@ -21,13 +19,12 @@ export default async function ApprovalPage({ params }: { params: Promise<{ token
     );
   }
 
+  const { request } = context;
   return (
     <div className="mx-auto max-w-md">
       <p className="text-sm font-medium text-emerald-700">Approval requested</p>
       <h1 className="mt-1 text-2xl font-bold text-slate-900">{request.title}</h1>
-      <p className="text-sm text-slate-500">
-        {request.property.address}, {request.property.suburb}
-      </p>
+      <p className="text-sm text-slate-500">{request.address}</p>
 
       <div className="my-6 rounded-xl border border-slate-200 bg-white p-5">
         <p className="text-sm text-slate-600">{request.description}</p>

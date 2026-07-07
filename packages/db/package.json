@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc --noEmit",
-    "migrate": "node --experimental-strip-types scripts/migrate.ts"
+    "migrate": "node --experimental-strip-types scripts/migrate.ts",
+    "seed": "node --experimental-strip-types scripts/seed-demo.ts"
   },
   "dependencies": {
     "postgres": "^3.4.5"

@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { formatCents } from "@1pacent/core";
 import { TrafficLightBadge } from "@/components/traffic-light";
-import { listProperties } from "@/lib/store";
+import { getData } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
-export default function DashboardPage() {
-  const properties = listProperties();
+export default async function DashboardPage() {
+  const properties = await (await getData()).listProperties();
   const totals = properties.reduce(
     (acc, p) => {
       acc.red += p.compliance.counts.red;
