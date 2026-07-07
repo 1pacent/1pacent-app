@@ -47,7 +47,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ from: \"1Pacent <onboarding@resend.dev>\", to: [$json.tradieEmail], subject: \"New job needing a quote: \" + $node[\"Webhook\"].json.body.request.title, html: \"<p>Hi \" + $json.tradieName + \",</p><p>A new job needs a quote at \" + $node[\"Webhook\"].json.body.property.address + \":</p><p><strong>\" + $node[\"Webhook\"].json.body.request.title + \"</strong></p><p>\" + $node[\"Webhook\"].json.body.request.description + \"</p><p><a href=\\\"\" + $json.quoteUrl + \"\\\">Submit your quote</a></p>\" }) }}",
+        "jsonBody": "={{ JSON.stringify({ from: \"1Pacent <onboarding@resend.dev>\", to: [$json.tradieEmail], subject: \"New job needing a quote: \" + $(\"Webhook\").first().json.body.request.title, html: \"<p>Hi \" + $json.tradieName + \",</p><p>A new job needs a quote at \" + $(\"Webhook\").first().json.body.property.address + \":</p><p><strong>\" + $(\"Webhook\").first().json.body.request.title + \"</strong></p><p>\" + $(\"Webhook\").first().json.body.request.description + \"</p><p><a href=\\\"\" + $json.quoteUrl + \"\\\">Submit your quote</a></p>\" }) }}",
         "options": {}
       },
       "id": "n3-send",

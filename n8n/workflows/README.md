@@ -1,10 +1,25 @@
 # 1PACENT-SALLY-\* workflows
 
-Two workflows, built and verified live on 2026-07-07 against
+Two workflows, built and verified live on 2026-07-07/08 against
 `n8n.1pacent.com`. Both are **active**, header-auth protected, and were
-each fired with a real test payload and confirmed to send real emails via
-Resend (execution logs showed a genuine Resend email `id` in the response,
-not just a 200 from the webhook).
+each fired with real payloads (including a genuine end-to-end run
+triggered by a real Sally conversation, not just a manual test) and
+confirmed to send real emails via Resend (execution logs showed genuine
+Resend email `id`s, not just a 200 from the webhook).
+
+**Known issue, fixed:** the first real 3-tradie dispatch (triggered by an
+actual live conversation) errored in n8n with `"Webhook" node has 1
+item(s) but you're trying to access item 1`. Cause: `Send Quote Request
+Email`'s expression referenced `$node["Webhook"].json...`, which resolves
+via n8n's paired-item tracking — after `Split Invites` fans one Webhook
+item out to 3, items at index 1 and 2 have no paired Webhook item at the
+same index, so the lookup fails. Fixed by switching to
+`$("Webhook").first().json...`, which grabs the Webhook node's (single)
+output unconditionally instead of trying to pair-match indices. This is a
+general n8n gotcha whenever an expression needs to reach back to a node
+*before* a fan-out (Split Out/Split In Batches) — always use
+`$("NodeName").first()` or `.all()[i]`, never `$node["NodeName"]`, once a
+fan-out sits between them.
 
 | Workflow | id | Webhook path | Trigger |
 |---|---|---|---|

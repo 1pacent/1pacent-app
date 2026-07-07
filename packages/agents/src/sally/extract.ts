@@ -15,7 +15,7 @@ export const sallyExtractionSchema = z.object({
   tenantStatedUrgency: z.enum(["emergency", "soon", "flexible"]),
   callOutFeeEstimateCents: z
     .object({ low: z.number().int().nonnegative(), high: z.number().int().nonnegative() })
-    .optional(),
+    .nullable(),
   readyToDispatch: z.boolean(),
   confidence: z.number().min(0).max(1),
 });
@@ -26,18 +26,33 @@ export interface SallyProposal {
   aiMeta: { model: string; promptVersion: string; confidence: number };
 }
 
+// OpenAI's strict structured-output mode requires every object — including
+// nested ones — to list ALL of its properties in `required`, even ones
+// that are conceptually optional. Optionality is expressed via a nullable
+// type instead of omission (confirmed against a live 400: "'required' is
+// required to be supplied and to be an array including every key in
+// properties" when callOutFeeEstimateCents.required was missing).
 const EXTRACTION_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["title", "description", "category", "tenantStatedUrgency", "readyToDispatch", "confidence"],
+  required: [
+    "title",
+    "description",
+    "category",
+    "tenantStatedUrgency",
+    "callOutFeeEstimateCents",
+    "readyToDispatch",
+    "confidence",
+  ],
   properties: {
     title: { type: "string" },
     description: { type: "string" },
     category: { type: "string", enum: [...REQUEST_CATEGORIES] },
     tenantStatedUrgency: { type: "string", enum: ["emergency", "soon", "flexible"] },
     callOutFeeEstimateCents: {
-      type: "object",
+      type: ["object", "null"],
       additionalProperties: false,
+      required: ["low", "high"],
       properties: { low: { type: "integer" }, high: { type: "integer" } },
     },
     readyToDispatch: { type: "boolean" },
@@ -48,7 +63,8 @@ const EXTRACTION_JSON_SCHEMA = {
 const EXTRACTION_INSTRUCTIONS =
   "Given the conversation so far between Sally (intake assistant) and a tenant, extract the job " +
   "details as JSON matching the schema exactly. Set readyToDispatch=true only once title, " +
-  "description, category, and urgency are all known with reasonable confidence. Output ONLY the " +
+  "description, category, and urgency are all known with reasonable confidence. Set " +
+  "callOutFeeEstimateCents to null if you haven't proposed a rough range yet. Output ONLY the " +
   "JSON object, no prose, no markdown fences.";
 
 export interface ExtractSallyProposalParams {

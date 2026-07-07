@@ -16,6 +16,7 @@ const VALID_EXTRACTION = {
   description: "The kitchen tap has been dripping constantly for two days.",
   category: "plumbing_general",
   tenantStatedUrgency: "soon",
+  callOutFeeEstimateCents: null,
   readyToDispatch: true,
   confidence: 0.9,
 };
