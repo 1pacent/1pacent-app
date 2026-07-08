@@ -98,14 +98,46 @@ This is the biggest idea and the truest endgame of the executor-abstraction thes
 
 ---
 
-## 4. Who feels what on day one (Crew Room)
+## 4. The experience, per persona — how one issue actually flows
 
-| Persona | Before | After |
-|---|---|---|
-| **Renter** | Reports issue, waits, wonders | Watches the crew handle it: named agents, real slot, live tracker — "it felt like a concierge, not a portal" |
-| **Landlord / owner-occupier** | Approves blind quotes, repeat callouts | Reads the feed, sets standing instructions once; warranty guard and policy do the taps; every decision arrives pre-explained with evidence |
-| **Tradie** *(pays)* | Buys a "missed-call answering" tool | Employs a crew: Sally answers, Nelly drafts accurate quotes that improve monthly, George fills the calendar, arrives already briefed by the property's history |
-| **Property manager** *(pays)* | Triage machine | Portfolio Crew Room: one feed across 41 properties, batchable compliance flagged, "1 needs you" instead of 41 |
+The Crew Room is not a page; it's the *same crew seen from four seats*. Here is one issue traced end-to-end, plus each seat's recurring experience.
+
+### 4.1 Renter — Maya, 12 Rose St ("I never chased anyone")
+
+1. **Raise it in one place, no account.** Scans the switchboard QR (or her saved link) → chats with Sally: *"the hot water's gone cold again."* Sally already knows the property — its assets, its history, Maya herself (memory recalls her preferred access times from last time).
+2. **The three questions get answered during the conversation, not after.** While Maya types, the crew works behind Sally:
+   - **Leo checks the warranty ledger first.** March hot-water repair by John Snow, 12-month warranty open → Sally says it *on the spot*: "Good news — this is covered by the warranty on the March repair. I'm sending John back at no cost, and your landlord doesn't need to approve anything."
+   - **If no warranty:** Nelly prices it live from real comparables → Sally states the band and the evidence ("usually lands between $180–$320 on this network — that's from 14 similar jobs") and the ETA from real response history ("someone typically responds within a couple of hours"). Urgent categories (VIC urgent-repairs list) bypass approval automatically — Sally says that too.
+3. **Then the promise stays visible.** The tracker on the same page fills in live, each step signed by who did it: *Sally logged it → Leo approved under your landlord's standing instruction → Nelly opened the quote round → George booked **Thu 2–4 pm** (a real slot from the tradie's live calendar, not "we'll be in touch") → John started → John says it's done → **Confirm it's fixed** (Maya's one tap).* 
+4. **Each issue is better than the last** — Sally remembers more, Nelly's band is tighter, the stated ETA is truer, and a warranty catch means the whole flow above collapses to "John's coming back Thursday, free."
+
+### 4.2 Landlord — Mark, owner ("one decision a month, pre-explained")
+
+- **One-time setup:** standing instructions to the crew — *auto-approve under $300 any tradie; under $800 if trust ≥ 80; never gas/electrical without me.* (This is the v4 policy engine wearing its real name.)
+- **The common case — no decision at all.** Feed entry: *"Leo auto-approved John's $240 quote under your $300 instruction — top-ranked of 3, dispatched. You did nothing."*
+- **The warranty case — explicitly not an approval.** This is the distinction the product must render, not bury: warranty claims never ask the landlord anything. Feed entry: *"Leo caught this one — March repair still under John's warranty until 14 Mar. Routed back to him. **Saved ~$290** (the median quote for this category)."* Savings are quantified per catch and totalled on the property's passport — the landlord's running proof of what the record is worth.
+- **The genuine decision — one moment, one recommendation.** When a quote round finishes *above* policy, the landlord gets a single decision screen (property page, or the emailed one-tap link): the **recommended option on top** — "Top pick: John, $460 total · trust 92 · can start Thursday" — with the ranking's why stated (trust 40% / cost 35% / availability 25%) and the other two quotes beneath it, one tap to accept any. Not three raw PDFs to study; a ranked recommendation with its working shown.
+- **Over time:** Quinn's insights arrive in the same feed — *"hot water system is 9 years into a 10–12 year life; a planned shoulder-season replacement typically runs ~40% under emergency pricing"* — which is exactly where concept #2 (Self-Maintaining Property) grows from, one insight at a time.
+
+### 4.3 Property manager — Jordan, 41 properties ("two lanes, one feed, 1 needs me")
+
+The PM's Crew Room is the portfolio view with maintenance split into its two real lanes:
+
+- **Reactive lane** — tenant-raised issues across all 41 properties in one attributed feed, each in its live state. The PM is *informed, not gating* (unchanged principle): landlord decisions happen without them, and the feed's summary line is the whole job: **"38 handled by the crew · 2 with landlords · 1 needs you."**
+- **Proactive lane — the regulatory calendar, worked by the crew.** The VIC compliance engine already knows every property's recurring obligations (smoke alarms yearly, gas 2-yearly, electrical 2-yearly, pool barriers…). The proactive lane shows them as upcoming work, and where 2+ properties share a requirement + suburb + ~30-day window, the crew flags the batch: *"14 gas safety checks due in Fitzroy/Collingwood within 45 days — **one route, one negotiated rate**."* One tap opens the batched quote round; George sequences the route; the compliance certificates land back on each property's passport as the jobs close.
+- **The report writes itself.** Quinn totals the quarter — batched-vs-standalone savings, warranty catches, median cycle time — which is the PM's own retention pitch to their landlord clients, generated as a byproduct.
+
+### 4.4 Tradie — John Snow ("a staff of six for the price of a tool")
+
+- **Sally answers his phone** — marketplace jobs *and* his own customers via his lead link, capturing scope in his business's name while he's on the tools.
+- **Nelly drafts every quote** from his rate card + the property's history, and publishes his accuracy back to him ("your electrical estimates ran 4% low last month — bands adjusted"). He confirms or edits; he never starts from a blank field.
+- **George fills the calendar**: when John wins a job, three real slots from his availability are proposed automatically; he taps one; the tenant's tracker updates itself. No phone tag — ever. (This is also the machine-to-machine seam the PM batching rides on.)
+- **Penny invoices at completion**, warranty terms captured in the same screen, and his trust score — earned once, portable across the network — gets him first look at the batch routes.
+- **He arrives already briefed**: the property's asset registry and prior Job Specs on his job card. Less diagnosing, more jobs per day.
+
+### 4.5 Where the moat turns every loop
+
+Every completed job simultaneously: tightens Nelly's price bands (comparables +1) → updates the tradie's trust score → adds an asset/warranty to the passport → emits a Job Spec into the corpus → feeds Quinn an accuracy/cycle-time fact. Four personas each acting in their own interest, all depositing into the same compounding record. That's the flywheel — visible, in the feed, every time.
 
 ## 5. Business model (unchanged from v4, sharpened by the crew)
 

@@ -138,6 +138,18 @@ Wiring changes to existing methods (all in `supabase-data.ts` + `store.ts`):
 5. **Quinn compiles on completion**: at the end of `invoiceJob`, load this org's completed-job facts (existing trust/comparables queries already fetch most of this), run `compileInsights`, upsert-append new rows to `crew_insights` (dedupe on `(agent, scope, metrics->>'cohortKey')` so re-invoicing doesn't spam).
 6. **Job Spec on invoice**: `invoiceJob` assembles `buildJobSpec(...)` and writes `work_orders.job_spec`.
 
+### 3.1 PM proactive lane — batch dispatch (closes a v4 gap)
+
+v4 *detects* batchable compliance groups but offers no action. Add:
+
+```ts
+dispatchComplianceBatch(pmPortfolioToken: string, group: {
+  requirementKey: string; suburb: string; propertyIds: string[];
+}): Promise<{ ok: boolean; requestIds?: string[]; error?: string }>;
+```
+
+For each property in the group: create a `maintenance_requests` row (title from the catalogue requirement name, category mapped from the requirement — gas→`plumbing_general`, electrical/smoke→`electrical_general`, pool→`garden_external`; mapping lives in `packages/core/src/compliance/category-map.ts`, tested), events `triage` + `auto_approve` (actor `system`/`leo`, payload note "Planned compliance work — regulatory calendar, no landlord approval required for statutory checks") then `request_quotes`, and run the existing `dispatchQuotesForRequest`. The batch shares a `payload.batch_key` so the feed can render it as one line ("George is sequencing 14 gas checks in Fitzroy"). PM page: the batchable-compliance card gains one button per group — **"Get this batch quoted"**. Completing each job files its `compliance_certificates` row via the existing invoice path (add `requirement_key` pass-through on `InvoiceJobInput` when the request originated from the calendar), which is what turns the traffic lights green.
+
 ## 4. UI
 
 - **`/properties/[id]` — Crew Room section** (server component + plain rendering, same bundle rules: no `@1pacent/core` in client files): the attributed feed, newest first, each item as `[avatar-chip Agent] headline — detail · time`. Crew chips use initials + role tooltips from `CREW`. Insights relevant to this property's categories surface inline.
