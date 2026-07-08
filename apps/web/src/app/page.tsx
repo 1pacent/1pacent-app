@@ -1,6 +1,8 @@
 import Link from "next/link";
+import { supabaseConfigured } from "@/lib/supabase";
 
 export default function LandingPage() {
+  const live = supabaseConfigured();
   return (
     <div className="py-8">
       <div className="max-w-2xl">
@@ -21,13 +23,13 @@ export default function LandingPage() {
             href="/dashboard"
             className="rounded-lg bg-emerald-600 px-5 py-2.5 font-semibold text-white hover:bg-emerald-700"
           >
-            See the demo dashboard
+            {live ? "Open the dashboard" : "See the demo dashboard"}
           </Link>
           <Link
-            href="/r/demo-intake"
+            href={live ? "/dashboard" : "/r/demo-intake"}
             className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-semibold text-slate-700 hover:bg-slate-50"
           >
-            Try tenant intake
+            {live ? "Test as a persona" : "Try tenant intake"}
           </Link>
         </div>
       </div>

@@ -17,6 +17,7 @@ import type {
   AcceptQuoteResult,
   DataSource,
   DispatchQuotesResult,
+  MintLinkResult,
   PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
@@ -29,6 +30,7 @@ import type {
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TestLinkTargets,
   TradieLeadConversationContext,
   TradieLeadExtractionInput,
   TradieLeadSummary,
@@ -403,6 +405,27 @@ function decideByTokenInternal(
   return { ok: true, state: result.state };
 }
 
+function decideByRequestIdInternal(
+  requestId: string,
+  decision: "approve" | "decline",
+): { ok: true; state: RequestState } | { ok: false; error: string } {
+  const request = requests.find((r) => r.id === requestId);
+  if (!request) return { ok: false, error: "Request not found." };
+
+  const current = requestState(request);
+  const result = transition(current, decision, "landlord");
+  if (!result.ok) {
+    return { ok: false, error: `This request is ${current.replace(/_/g, " ")} — no decision is pending.` };
+  }
+  request.events.push({
+    eventType: decision,
+    actorType: "landlord",
+    actorId: "dashboard",
+    at: new Date().toISOString(),
+  });
+  return { ok: true, state: result.state };
+}
+
 /** Demo store exposed through the shared DataSource surface (see data.ts). */
 export const demoData: DataSource = {
   async listProperties(): Promise<PropertySummary[]> {
@@ -474,6 +497,10 @@ export const demoData: DataSource = {
 
   async decideApprovalByToken(token: string, decision: "approve" | "decline") {
     return decideByTokenInternal(token, decision);
+  },
+
+  async decideApprovalByRequestId(requestId: string, decision: "approve" | "decline") {
+    return decideByRequestIdInternal(requestId, decision);
   },
 
   async startSallyConversation(token: string): Promise<SallyConversationContext | null> {
@@ -901,6 +928,54 @@ export const demoData: DataSource = {
           createdAt: l.createdAt,
         };
       });
+  },
+
+  async getTestLinkTargets(): Promise<TestLinkTargets> {
+    return {
+      properties: properties.map((p) => ({ id: p.id, address: `${p.address}, ${p.suburb}` })),
+      propertyManagers: contacts
+        .filter((c) => c.kind === "property_manager")
+        .map((c) => ({ id: c.id, name: c.fullName })),
+      tradies: contacts.filter((c) => c.kind === "tradie").map((c) => ({ id: c.id, name: c.fullName })),
+    };
+  },
+
+  async mintTenantIntakeLink(propertyId: string): Promise<MintLinkResult> {
+    const property = properties.find((p) => p.id === propertyId);
+    if (!property) return { ok: false, error: "Property not found." };
+    let tenant = contacts.find((c) => c.kind === "tenant");
+    if (!tenant) {
+      tenant = {
+        id: `contact-tenant-${Math.random().toString(36).slice(2, 8)}`,
+        kind: "tenant",
+        fullName: "Test Renter",
+        email: "mac@1pacent.com",
+      };
+      contacts.push(tenant);
+    }
+    const token = issueDemoToken("tenant_intake", property.id, tenant.id);
+    return { ok: true, path: `/r/${token}` };
+  },
+
+  async mintPmPortfolioLink(pmContactId: string): Promise<MintLinkResult> {
+    const pm = contacts.find((c) => c.id === pmContactId);
+    if (!pm) return { ok: false, error: "Property manager not found." };
+    const token = issueDemoToken("pm_portfolio", pm.id, pm.id);
+    return { ok: true, path: `/pm/${token}` };
+  },
+
+  async mintTradiePortalLink(tradieContactId: string): Promise<MintLinkResult> {
+    const tradie = contacts.find((c) => c.id === tradieContactId);
+    if (!tradie) return { ok: false, error: "Tradie not found." };
+    const token = issueDemoToken("tradie_portal", tradie.id, tradie.id);
+    return { ok: true, path: `/t/${token}` };
+  },
+
+  async mintTradieLeadIntakeLink(tradieContactId: string): Promise<MintLinkResult> {
+    const tradie = contacts.find((c) => c.id === tradieContactId);
+    if (!tradie) return { ok: false, error: "Tradie not found." };
+    const token = issueDemoToken("tradie_lead_intake", tradie.id);
+    return { ok: true, path: `/l/${token}` };
   },
 };
 

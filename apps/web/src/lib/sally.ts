@@ -13,7 +13,7 @@ import {
 import { estimatePriceBand, formatCents, formatResponseWindow } from "@1pacent/core";
 import { getData } from "./data";
 import type { DataSource, SallyConversationContext } from "./data-types";
-import { triggerDispatchQuotes } from "./n8n";
+import { dispatchQuotesIfApproved } from "./dispatch-quotes";
 
 /**
  * Orchestrates a single Sally turn: persistence lives in the DataSource
@@ -200,27 +200,3 @@ async function writeMemorySafely(params: WriteMemoryParams): Promise<void> {
   }
 }
 
-async function dispatchQuotesIfApproved(data: DataSource, requestId: string, state: string): Promise<void> {
-  if (state !== "approved") return;
-  const result = await data.dispatchQuotesForRequest(requestId);
-  if (!result.ok) {
-    console.warn("[sally] dispatchQuotesForRequest failed:", result.error);
-    return;
-  }
-  const base = process.env.APP_BASE_URL ?? "";
-  try {
-    await triggerDispatchQuotes({
-      requestId,
-      property: { address: result.propertyAddress },
-      request: { title: result.requestTitle, description: result.requestDescription },
-      invites: result.invites.map((i) => ({
-        quoteId: i.quoteId,
-        tradieName: i.tradieName,
-        tradieEmail: i.tradieEmail,
-        quoteUrl: `${base}/q/${i.token}`,
-      })),
-    });
-  } catch (e) {
-    console.warn("[sally] n8n dispatch-quotes notification failed:", e);
-  }
-}

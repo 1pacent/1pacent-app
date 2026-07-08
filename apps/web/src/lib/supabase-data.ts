@@ -25,6 +25,7 @@ import type {
   DataSource,
   DispatchQuotesResult,
   IntakeContext,
+  MintLinkResult,
   PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
@@ -38,6 +39,7 @@ import type {
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TestLinkTargets,
   TradieLeadConversationContext,
   TradieLeadExtractionInput,
   TradieLeadSummary,
@@ -326,6 +328,35 @@ export const supabaseData: DataSource = {
 
     await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
     await db.from("access_tokens").update({ used_at: new Date().toISOString() }).eq("id", resolved.id);
+    return { ok: true as const, state: result.state };
+  },
+
+  async decideApprovalByRequestId(requestId, decision) {
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false as const, error: "Request not found." };
+
+    const current = req.status as RequestState;
+    const result = transition(current, decision, "landlord");
+    if (!result.ok) {
+      return { ok: false as const, error: `This request is ${current.replace(/_/g, " ")} — no decision is pending.` };
+    }
+
+    const { error: evError } = await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: decision,
+      actor_type: "landlord",
+      actor_id: "dashboard",
+    });
+    if (evError) return { ok: false as const, error: `Could not record the decision: ${evError.message}` };
+
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
     return { ok: true as const, state: result.state };
   },
 
@@ -1170,6 +1201,121 @@ export const supabaseData: DataSource = {
         createdAt: row.created_at,
       };
     });
+  },
+
+  async getTestLinkTargets(): Promise<TestLinkTargets> {
+    const db = serviceClient();
+    const [{ data: properties }, { data: pms }, { data: tradies }] = await Promise.all([
+      db.from("properties").select("id, address_line1, suburb").order("created_at", { ascending: true }),
+      db
+        .from("contacts")
+        .select("id, full_name")
+        .eq("kind", "property_manager")
+        .order("created_at", { ascending: true }),
+      db.from("contacts").select("id, full_name").eq("kind", "tradie").order("created_at", { ascending: true }),
+    ]);
+    return {
+      properties: ((properties ?? []) as Array<{ id: string; address_line1: string; suburb: string }>).map((p) => ({
+        id: p.id,
+        address: `${p.address_line1}, ${p.suburb}`,
+      })),
+      propertyManagers: ((pms ?? []) as Array<{ id: string; full_name: string }>).map((c) => ({
+        id: c.id,
+        name: c.full_name,
+      })),
+      tradies: ((tradies ?? []) as Array<{ id: string; full_name: string }>).map((c) => ({
+        id: c.id,
+        name: c.full_name,
+      })),
+    };
+  },
+
+  async mintTenantIntakeLink(propertyId: string): Promise<MintLinkResult> {
+    const db = serviceClient();
+    const { data: prop } = await db.from("properties").select("id, org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return { ok: false, error: "Property not found." };
+
+    const { data: tenants } = await db
+      .from("contacts")
+      .select("id")
+      .eq("org_id", prop.org_id)
+      .eq("kind", "tenant")
+      .limit(1);
+    let tenantId = tenants?.[0]?.id as string | undefined;
+    if (!tenantId) {
+      const { data: created, error: createErr } = await db
+        .from("contacts")
+        .insert({ org_id: prop.org_id, kind: "tenant", full_name: "Test Renter", email: "mac@1pacent.com" })
+        .select("id")
+        .single();
+      if (createErr || !created) return { ok: false, error: "Could not create a test tenant contact." };
+      tenantId = created.id as string;
+    }
+
+    const issued = issueToken("tenant_intake");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: prop.org_id,
+      token_hash: issued.tokenHash,
+      scope: "tenant_intake",
+      aggregate_id: prop.id,
+      contact_id: tenantId,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/r/${issued.token}` };
+  },
+
+  async mintPmPortfolioLink(pmContactId: string): Promise<MintLinkResult> {
+    const db = serviceClient();
+    const { data: pm } = await db.from("contacts").select("id, org_id").eq("id", pmContactId).maybeSingle();
+    if (!pm) return { ok: false, error: "Property manager not found." };
+
+    const issued = issueToken("pm_portfolio");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: pm.org_id,
+      token_hash: issued.tokenHash,
+      scope: "pm_portfolio",
+      aggregate_id: pm.id,
+      contact_id: pm.id,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/pm/${issued.token}` };
+  },
+
+  async mintTradiePortalLink(tradieContactId: string): Promise<MintLinkResult> {
+    const db = serviceClient();
+    const { data: tradie } = await db.from("contacts").select("id, org_id").eq("id", tradieContactId).maybeSingle();
+    if (!tradie) return { ok: false, error: "Tradie not found." };
+
+    const issued = issueToken("tradie_portal");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: tradie.org_id,
+      token_hash: issued.tokenHash,
+      scope: "tradie_portal",
+      aggregate_id: tradie.id,
+      contact_id: tradie.id,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/t/${issued.token}` };
+  },
+
+  async mintTradieLeadIntakeLink(tradieContactId: string): Promise<MintLinkResult> {
+    const db = serviceClient();
+    const { data: tradie } = await db.from("contacts").select("id, org_id").eq("id", tradieContactId).maybeSingle();
+    if (!tradie) return { ok: false, error: "Tradie not found." };
+
+    const issued = issueToken("tradie_lead_intake");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: tradie.org_id,
+      token_hash: issued.tokenHash,
+      scope: "tradie_lead_intake",
+      aggregate_id: tradie.id,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/l/${issued.token}` };
   },
 };
 

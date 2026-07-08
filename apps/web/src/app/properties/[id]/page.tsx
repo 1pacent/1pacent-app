@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { classifyTrust, formatCents, rankQuotes, scoreAvailability, scoreTrust } from "@1pacent/core";
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
+import { ApprovalPanel } from "./approval-panel";
 import { QuotesPanel, type QuotesPanelQuote } from "./quotes-panel";
 
 export const dynamic = "force-dynamic";
@@ -156,6 +157,7 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
             {r.state === "quoting" && quotesByRequest.has(r.id) && (
               <QuotesPanel requestId={r.id} quotes={quotesByRequest.get(r.id)!} />
             )}
+            {r.state === "pending_approval" && <ApprovalPanel requestId={r.id} />}
           </div>
         ))}
       </div>

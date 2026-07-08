@@ -208,6 +208,9 @@ export interface DataSource {
   lodgeIntake(token: string, input: IntakeInput): Promise<IntakeOutcome>;
   getApprovalContext(token: string): Promise<ApprovalContext | null>;
   decideApprovalByToken(token: string, decision: "approve" | "decline"): Promise<DecisionOutcome>;
+  /** Same decision, taken directly from the internal dashboard (no landlord auth exists yet, so
+   * the dashboard itself is the internal test/ops surface — this skips the token detour). */
+  decideApprovalByRequestId(requestId: string, decision: "approve" | "decline"): Promise<DecisionOutcome>;
 
   // Sally
   startSallyConversation(token: string): Promise<SallyConversationContext | null>;
@@ -266,4 +269,21 @@ export interface DataSource {
     extraction: TradieLeadExtractionInput,
   ): Promise<{ ok: true; leadId: string } | { ok: false; error: string }>;
   listTradieLeads(tradiePortalToken: string): Promise<TradieLeadSummary[]>;
+
+  // Internal testing hub — no landlord/PM/tradie auth exists yet, so the dashboard
+  // IS the internal test surface; these mint fresh, real persona links on demand
+  // so every persona's actual experience can be walked through as a real user.
+  getTestLinkTargets(): Promise<TestLinkTargets>;
+  mintTenantIntakeLink(propertyId: string): Promise<MintLinkResult>;
+  mintPmPortfolioLink(pmContactId: string): Promise<MintLinkResult>;
+  mintTradiePortalLink(tradieContactId: string): Promise<MintLinkResult>;
+  mintTradieLeadIntakeLink(tradieContactId: string): Promise<MintLinkResult>;
+}
+
+export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };
+
+export interface TestLinkTargets {
+  properties: Array<{ id: string; address: string }>;
+  propertyManagers: Array<{ id: string; name: string }>;
+  tradies: Array<{ id: string; name: string }>;
 }

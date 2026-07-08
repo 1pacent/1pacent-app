@@ -2,11 +2,13 @@ import Link from "next/link";
 import { formatCents } from "@1pacent/core";
 import { TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
+import { TestLinksPanel } from "./test-links-panel";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const properties = await (await getData()).listProperties();
+  const data = await getData();
+  const [properties, testLinkTargets] = await Promise.all([data.listProperties(), data.getTestLinkTargets()]);
   const totals = properties.reduce(
     (acc, p) => {
       acc.red += p.compliance.counts.red;
@@ -67,6 +69,10 @@ export default async function DashboardPage() {
             </div>
           </Link>
         ))}
+      </div>
+
+      <div className="mt-10">
+        <TestLinksPanel {...testLinkTargets} />
       </div>
     </div>
   );
