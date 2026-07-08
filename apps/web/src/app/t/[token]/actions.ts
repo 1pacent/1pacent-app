@@ -1,8 +1,12 @@
 "use server";
 
-import { parseDollarsToCents } from "@1pacent/core";
+import { parseDollarsToCents, REQUEST_CATEGORIES, type RequestCategory } from "@1pacent/core";
 import { getData } from "@/lib/data";
 import { RATE_CARD_CATEGORIES } from "./categories";
+
+function toRequestCategory(value: string): RequestCategory {
+  return (REQUEST_CATEGORIES as readonly string[]).includes(value) ? (value as RequestCategory) : "other";
+}
 
 export interface SaveRateCardResult {
   ok: boolean;
@@ -39,4 +43,51 @@ export async function saveRateCard(token: string, formData: FormData): Promise<S
 
   const data = await getData();
   return data.saveRateCard(token, { callOutFeeCents, hourlyRateCents, items });
+}
+
+export async function startJobAction(token: string, workOrderId: string) {
+  return (await getData()).startJob(token, workOrderId);
+}
+
+export async function markJobDoneAction(token: string, workOrderId: string, note: string) {
+  return (await getData()).markJobDone(token, workOrderId, note);
+}
+
+export interface InvoiceJobResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function invoiceJobAction(
+  token: string,
+  workOrderId: string,
+  category: string,
+  formData: FormData,
+): Promise<InvoiceJobResult> {
+  let invoiceCents: number;
+  let callOutFeeCents: number;
+  try {
+    invoiceCents = parseDollarsToCents(String(formData.get("invoiceCents") ?? "").trim());
+    callOutFeeCents = parseDollarsToCents(String(formData.get("callOutFeeCents") ?? "").trim());
+  } catch {
+    return { ok: false, error: "Enter valid dollar amounts for the invoice and call-out fee." };
+  }
+  const warrantyRaw = String(formData.get("warrantyMonths") ?? "0").trim();
+  const warrantyMonths = Number.parseInt(warrantyRaw, 10);
+  if (!Number.isFinite(warrantyMonths) || warrantyMonths < 0 || warrantyMonths > 24) {
+    return { ok: false, error: "Warranty must be between 0 and 24 months." };
+  }
+  const assetLabel = String(formData.get("assetLabel") ?? "").trim();
+  if (!assetLabel) return { ok: false, error: "Describe what was worked on (e.g. \"Hot water system\")." };
+  const assetInstalledAt = String(formData.get("assetInstalledAt") ?? "").trim() || null;
+
+  const data = await getData();
+  return data.invoiceJob(token, workOrderId, {
+    invoiceCents,
+    callOutFeeCents,
+    warrantyMonths,
+    assetLabel,
+    assetCategory: toRequestCategory(category),
+    assetInstalledAt,
+  });
 }

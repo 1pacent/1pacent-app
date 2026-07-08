@@ -37,6 +37,26 @@ export default async function PmPortfolioPage({ params }: { params: Promise<{ to
         <p className="text-sm text-slate-500">No properties assigned to you yet.</p>
       )}
 
+      {context.batchableCompliance.length > 0 && (
+        <div className="mb-8 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+          <h2 className="text-sm font-semibold text-emerald-900">Batchable compliance</h2>
+          <p className="mt-1 text-xs text-emerald-800">
+            These properties need the same check around the same time, in the same suburb — one tradie,
+            one route, instead of separate callouts for each.
+          </p>
+          <div className="mt-3 space-y-2">
+            {context.batchableCompliance.map((b, i) => (
+              <div key={i} className="rounded-lg bg-white px-3 py-2 text-sm">
+                <p className="font-medium text-slate-900">
+                  {b.requirementName} — {b.suburb}
+                </p>
+                <p className="text-xs text-slate-500">{b.propertyAddresses.join(" · ")}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-6">
         {context.properties.map((property) => (
           <div key={property.id} className="rounded-xl border border-slate-200 bg-white p-5">

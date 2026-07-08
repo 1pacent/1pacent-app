@@ -1,23 +1,35 @@
 import {
+  computeBatchableCompliance,
   decideApproval,
+  evaluateApprovalPolicy,
   evaluateProperty,
+  findWarrantyMatch,
   isUrgentCategory,
   projectState,
+  rankQuotes,
+  scoreAvailability,
+  scoreTrust,
   transition,
   validateQuoteSubmission,
   type ActorType,
+  type ApprovalPolicyRule,
   type EvidenceRecord,
   type PropertyComplianceProfile,
   type PropertyComplianceStatus,
   type RequestCategory,
   type RequestEvent,
   type RequestState,
+  type WarrantyCandidate,
 } from "@1pacent/core";
 import type {
   AcceptQuoteResult,
+  ApprovalPolicyRuleInput,
+  ApprovalPolicyRuleView,
   DataSource,
   DispatchQuotesResult,
+  InvoiceJobInput,
   MintLinkResult,
+  OccupancyStatus,
   PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
@@ -30,7 +42,9 @@ import type {
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TenantRequestStatus,
   TestLinkTargets,
+  TradieJobSummary,
   TradieLeadConversationContext,
   TradieLeadExtractionInput,
   TradieLeadSummary,
@@ -55,6 +69,8 @@ export interface DemoProperty {
   autoApproveCapCents: number;
   evidence: EvidenceRecord[];
   pmContactId?: string;
+  occupancyStatus?: OccupancyStatus;
+  ownerContactId?: string;
 }
 
 export interface DemoRequestEventRow {
@@ -74,6 +90,7 @@ export interface DemoRequest {
   estimateCents: number | null;
   reportedAt: string;
   events: DemoRequestEventRow[];
+  warrantyClaimOfWorkOrderId?: string;
 }
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
@@ -175,6 +192,7 @@ interface DemoContact {
 
 const contacts: DemoContact[] = [
   { id: "contact-tenant-1", kind: "tenant", fullName: "Priya Nair", email: "mac@1pacent.com" },
+  { id: "contact-owner-mark", kind: "owner", fullName: "Mark McNamara", email: "mac@1pacent.com" },
   { id: "contact-pm-jordan", kind: "property_manager", fullName: "Jordan Blake", email: "mac@1pacent.com" },
   { id: "contact-tradie-john", kind: "tradie", fullName: "John Snow", email: "mac@1pacent.com" },
   { id: "contact-tradie-leo", kind: "tradie", fullName: "Leo Baker", email: "mac@1pacent.com" },
@@ -251,6 +269,43 @@ interface DemoTradieLead {
   createdAt: string;
 }
 const tradieLeads: DemoTradieLead[] = [];
+
+interface DemoWorkOrder {
+  id: string;
+  requestId: string;
+  tradieContactId: string;
+  status: RequestState; // projection only, mirrors the request's state
+  quoteCents: number | null;
+  callOutFeeCents: number | null;
+  invoiceCents: number | null;
+  assetId: string | null;
+  warrantyExpiresAt: string | null;
+  completionNote: string | null;
+}
+const workOrders: DemoWorkOrder[] = [];
+let demoWorkOrderSeq = 0;
+
+interface DemoPropertyAsset {
+  id: string;
+  propertyId: string;
+  category: RequestCategory;
+  label: string;
+  installedAt: string | null;
+}
+const propertyAssets: DemoPropertyAsset[] = [];
+let demoAssetSeq = 0;
+
+interface DemoApprovalPolicyRule {
+  id: string;
+  propertyId: string;
+  priority: number;
+  maxTotalCents: number | null;
+  minTrustScore: number | null;
+  excludeCategories: RequestCategory[];
+  enabled: boolean;
+}
+const approvalPolicyRules: DemoApprovalPolicyRule[] = [];
+let demoPolicyRuleSeq = 0;
 
 /** Demo stand-ins for hashed access_tokens rows. Tradie-job tokens are issued
  * dynamically by dispatchQuotesForRequest, so this map is mutable. */
@@ -426,6 +481,58 @@ function decideByRequestIdInternal(
   return { ok: true, state: result.state };
 }
 
+/** Shared by the landlord's manual accept click and the approval-policy
+ * auto-accept path — mirrors supabase-data.ts's acceptQuoteTx. */
+function acceptQuoteInternal(
+  request: DemoRequest,
+  quoteId: string,
+  actorType: ActorType,
+  actorId: string,
+): AcceptQuoteResult {
+  const current = requestState(request);
+  const result = transition(current, "accept_quote", actorType);
+  if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
+
+  const requestQuotes = quotes.filter((q) => q.requestId === request.id);
+  const accepted = requestQuotes.find((q) => q.id === quoteId);
+  if (!accepted) return { ok: false, error: "Quote not found for this request." };
+  if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
+
+  request.events.push({ eventType: "accept_quote", actorType, actorId, at: new Date().toISOString() });
+  accepted.status = "accepted";
+  const declined = requestQuotes.filter((q) => q.id !== quoteId);
+  declined.forEach((q) => (q.status = "not_selected"));
+
+  workOrders.push({
+    id: `wo-${++demoWorkOrderSeq}`,
+    requestId: request.id,
+    tradieContactId: accepted.tradieContactId,
+    status: "scheduled",
+    quoteCents: accepted.quoteCents,
+    callOutFeeCents: accepted.callOutFeeCents,
+    invoiceCents: null,
+    assetId: null,
+    warrantyExpiresAt: null,
+    completionNote: null,
+  });
+
+  const acceptedContact = contacts.find((c) => c.id === accepted.tradieContactId);
+  return {
+    ok: true,
+    state: result.state,
+    accepted: {
+      tradieName: acceptedContact?.fullName ?? "",
+      tradieEmail: acceptedContact?.email ?? "",
+      quoteCents: accepted.quoteCents ?? 0,
+      callOutFeeCents: accepted.callOutFeeCents ?? 0,
+    },
+    declined: declined.map((q) => {
+      const c = contacts.find((x) => x.id === q.tradieContactId);
+      return { tradieName: c?.fullName ?? "", tradieEmail: c?.email ?? "" };
+    }),
+  };
+}
+
 /** Demo store exposed through the shared DataSource surface (see data.ts). */
 export const demoData: DataSource = {
   async listProperties(): Promise<PropertySummary[]> {
@@ -442,12 +549,32 @@ export const demoData: DataSource = {
   async getProperty(id: string): Promise<PropertyDetail | null> {
     const p = getProperty(id);
     if (!p) return null;
+    const owner = p.ownerContactId ? contacts.find((c) => c.id === p.ownerContactId) : null;
+    const now = new Date();
     return {
       id: p.id,
       address: p.address,
       suburb: p.suburb,
       autoApproveCapCents: p.autoApproveCapCents,
       compliance: p.compliance,
+      occupancyStatus: p.occupancyStatus ?? "tenanted",
+      ownerContactId: p.ownerContactId ?? null,
+      ownerName: owner?.fullName ?? null,
+      availableOwners: contacts.filter((c) => c.kind === "owner").map((c) => ({ id: c.id, name: c.fullName })),
+      openWarranties: workOrders
+        .filter((w) => w.warrantyExpiresAt && new Date(w.warrantyExpiresAt) > now)
+        .map((w) => {
+          const asset = propertyAssets.find((a) => a.id === w.assetId);
+          if (!asset || asset.propertyId !== p.id) return null;
+          const tradie = contacts.find((c) => c.id === w.tradieContactId);
+          return {
+            assetLabel: asset.label,
+            category: asset.category,
+            tradieName: tradie?.fullName ?? "Unknown",
+            expiresAt: w.warrantyExpiresAt!,
+          };
+        })
+        .filter((w): w is NonNullable<typeof w> => w !== null),
       openRequests: p.requests.filter((r) => !["closed", "cancelled"].includes(r.state)).length,
       requests: p.requests.map((r) => ({
         id: r.id,
@@ -456,7 +583,8 @@ export const demoData: DataSource = {
         category: r.category,
         estimateCents: r.estimateCents,
         state: r.state,
-        events: r.events.map((e) => ({ eventType: e.eventType, actorType: e.actorType, note: e.note })),
+        isWarrantyClaim: Boolean(r.warrantyClaimOfWorkOrderId),
+        events: r.events.map((e) => ({ eventType: e.eventType, actorType: e.actorType, note: e.note, at: e.at })),
       })),
     };
   },
@@ -572,6 +700,72 @@ export const demoData: DataSource = {
     }
     const property = properties.find((p) => p.id === convo.propertyId);
     if (!property) return { ok: false as const, error: "Property not found." };
+
+    // Warranty-aware routing (Developer Brief v4 §2): skip the intake gate and
+    // the 3-quote marketplace entirely when an open warranty matches.
+    const candidates: WarrantyCandidate[] = workOrders
+      .filter((w) => w.warrantyExpiresAt && w.assetId)
+      .map((w) => {
+        const asset = propertyAssets.find((a) => a.id === w.assetId && a.propertyId === property.id);
+        return asset
+          ? {
+              workOrderId: w.id,
+              tradieContactId: w.tradieContactId,
+              assetId: asset.id,
+              category: asset.category,
+              warrantyExpiresAt: new Date(w.warrantyExpiresAt!),
+            }
+          : null;
+      })
+      .filter((c): c is WarrantyCandidate => c !== null);
+    const warrantyMatch = findWarrantyMatch(candidates, extraction.category, new Date());
+
+    if (warrantyMatch) {
+      const now = new Date().toISOString();
+      const request: DemoRequest = {
+        id: `req-${Math.random().toString(36).slice(2, 8)}`,
+        propertyId: property.id,
+        title: extraction.title,
+        description: extraction.description,
+        category: extraction.category,
+        estimateCents: null,
+        reportedAt: now,
+        warrantyClaimOfWorkOrderId: warrantyMatch.workOrderId,
+        events: [
+          { eventType: "triage", actorType: "system", actorId: "sally", at: now },
+          {
+            eventType: "auto_approve",
+            actorType: "system",
+            actorId: "warranty-routing",
+            at: now,
+            note: "Warranty claim — routed to the original tradie, no marketplace round.",
+          },
+          {
+            eventType: "schedule",
+            actorType: "system",
+            actorId: "warranty-routing",
+            at: now,
+            note: "Dispatched directly under an open warranty.",
+          },
+        ],
+      };
+      requests.push(request);
+      workOrders.push({
+        id: `wo-${++demoWorkOrderSeq}`,
+        requestId: request.id,
+        tradieContactId: warrantyMatch.tradieContactId,
+        status: "scheduled",
+        quoteCents: 0,
+        callOutFeeCents: 0,
+        invoiceCents: null,
+        assetId: warrantyMatch.assetId,
+        warrantyExpiresAt: null,
+        completionNote: null,
+      });
+      convo.status = "completed";
+      convo.requestId = request.id;
+      return { ok: true as const, requestId: request.id, state: requestState(request), urgent: false };
+    }
 
     const result = submitIntake({
       propertyId: property.id,
@@ -690,7 +884,57 @@ export const demoData: DataSource = {
     quote.callOutFeeCents = input.callOutFeeCents;
     quote.note = input.note ?? null;
     quote.submittedAt = new Date().toISOString();
-    return { ok: true as const };
+
+    // Approval policy (Developer Brief v4 §3): once every invited quote for this
+    // request has resolved, rank them and check whether the property's policy
+    // pre-approves the winner — evaluated against a real price.
+    const request = requests.find((r) => r.id === quote.requestId);
+    if (!request || requestState(request) !== "quoting") return { ok: true as const };
+    const siblingQuotes = quotes.filter((q) => q.requestId === quote.requestId);
+    if (siblingQuotes.some((q) => q.status === "invited")) return { ok: true as const };
+
+    const submitted = siblingQuotes.filter((q) => q.status === "submitted");
+    if (submitted.length === 0) return { ok: true as const };
+    const trustIds = [...new Set(submitted.map((q) => q.tradieContactId))];
+    const trust = await demoData.getTradieTrustSummaries(trustIds);
+    const rankable = submitted
+      .filter((q) => q.quoteCents !== null && q.callOutFeeCents !== null)
+      .map((q) => ({
+        quoteId: q.id,
+        totalCents: q.quoteCents! + q.callOutFeeCents!,
+        trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+        availabilityScore: scoreAvailability({
+          tradieRespondedWithinMinutes: q.submittedAt
+            ? (new Date(q.submittedAt).getTime() - new Date(q.createdAt).getTime()) / 60_000
+            : null,
+          matchesTenantPreferredWindow: false,
+          currentOpenJobCount: 0,
+        }),
+      }));
+    if (rankable.length === 0) return { ok: true as const };
+    const winner = rankQuotes(rankable)[0]!;
+
+    const rules: ApprovalPolicyRule[] = approvalPolicyRules
+      .filter((r) => r.propertyId === request.propertyId && r.enabled)
+      .sort((a, b) => a.priority - b.priority)
+      .map((r) => ({
+        maxTotalCents: r.maxTotalCents,
+        minTrustScore: r.minTrustScore,
+        excludeCategories: r.excludeCategories,
+      }));
+    const policyResult = evaluateApprovalPolicy(rules, {
+      category: request.category,
+      totalCents: winner.totalCents,
+      trustScore: winner.trustScore,
+    });
+    if (!policyResult.autoApprove) return { ok: true as const };
+
+    const acceptResult = acceptQuoteInternal(request, winner.quoteId, "system", "approval-policy");
+    if (!acceptResult.ok || !acceptResult.accepted || !acceptResult.declined) return { ok: true as const };
+    return {
+      ok: true as const,
+      autoAccepted: { requestId: request.id, accepted: acceptResult.accepted, declined: acceptResult.declined },
+    };
   },
 
   async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
@@ -717,46 +961,15 @@ export const demoData: DataSource = {
   async acceptQuote(requestId: string, quoteId: string): Promise<AcceptQuoteResult> {
     const request = requests.find((r) => r.id === requestId);
     if (!request) return { ok: false, error: "Request not found." };
-    const current = requestState(request);
-    const result = transition(current, "accept_quote", "landlord");
-    if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
-
-    const requestQuotes = quotes.filter((q) => q.requestId === requestId);
-    const accepted = requestQuotes.find((q) => q.id === quoteId);
-    if (!accepted) return { ok: false, error: "Quote not found for this request." };
-    if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
-
-    request.events.push({
-      eventType: "accept_quote",
-      actorType: "landlord",
-      actorId: "dashboard",
-      at: new Date().toISOString(),
-    });
-    accepted.status = "accepted";
-    const declined = requestQuotes.filter((q) => q.id !== quoteId);
-    declined.forEach((q) => (q.status = "not_selected"));
-
-    const acceptedContact = contacts.find((c) => c.id === accepted.tradieContactId);
-    return {
-      ok: true,
-      state: result.state,
-      accepted: {
-        tradieName: acceptedContact?.fullName ?? "",
-        tradieEmail: acceptedContact?.email ?? "",
-        quoteCents: accepted.quoteCents ?? 0,
-        callOutFeeCents: accepted.callOutFeeCents ?? 0,
-      },
-      declined: declined.map((q) => {
-        const c = contacts.find((x) => x.id === q.tradieContactId);
-        return { tradieName: c?.fullName ?? "", tradieEmail: c?.email ?? "" };
-      }),
-    };
+    return acceptQuoteInternal(request, quoteId, "landlord", "dashboard");
   },
 
-  async getComparableJobs(): Promise<Array<{ finalInvoiceCents: number }>> {
-    // Demo store tracks no completed-job invoice history — honest cold-start
-    // behaviour, same as getTradieTrustSummaries below.
-    return [];
+  async getComparableJobs(propertyId: string, category: RequestCategory): Promise<Array<{ finalInvoiceCents: number }>> {
+    const requestIdsForCategory = requests.filter((r) => r.category === category).map((r) => r.id);
+    void propertyId; // demo store is single-org; comparables pool across the whole demo org, like a small network would
+    return workOrders
+      .filter((w) => w.invoiceCents !== null && requestIdsForCategory.includes(w.requestId))
+      .map((w) => ({ finalInvoiceCents: w.invoiceCents! }));
   },
 
   async getTypicalResponseMinutes(): Promise<number | null> {
@@ -764,11 +977,19 @@ export const demoData: DataSource = {
   },
 
   async getTradieTrustSummaries(tradieContactIds: string[]) {
-    // Demo store seeds no completed job history — every tradie reads as
-    // "unproven" until real work_orders with invoice_cents exist.
     const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
     for (const id of tradieContactIds) {
-      summaries[id] = { completedJobs: 0, avgAbsVariancePct: null };
+      const completed = workOrders.filter((w) => w.tradieContactId === id && w.invoiceCents !== null);
+      if (completed.length === 0) {
+        summaries[id] = { completedJobs: 0, avgAbsVariancePct: null };
+        continue;
+      }
+      const variances = completed
+        .filter((w) => w.quoteCents !== null && w.quoteCents! > 0)
+        .map((w) => Math.abs(w.invoiceCents! - w.quoteCents!) / w.quoteCents!);
+      const avgAbsVariancePct =
+        variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
+      summaries[id] = { completedJobs: completed.length, avgAbsVariancePct };
     }
     return summaries;
   },
@@ -818,7 +1039,21 @@ export const demoData: DataSource = {
     const propertyDetails = (
       await Promise.all(managedIds.map((id) => this.getProperty(id)))
     ).filter((p): p is PropertyDetail => p !== null);
-    return { pmName: pm.fullName, properties: propertyDetails };
+    const batches = computeBatchableCompliance(
+      propertyDetails.map((p) => ({ address: p.address, suburb: p.suburb, compliance: p.compliance })),
+    );
+    return {
+      pmName: pm.fullName,
+      properties: propertyDetails,
+      batchableCompliance: batches.map((b) => ({
+        requirementKey: b.requirementKey,
+        requirementName: b.requirementName,
+        suburb: b.suburb,
+        propertyAddresses: b.propertyAddresses,
+        windowStart: b.windowStart.toISOString(),
+        windowEnd: b.windowEnd.toISOString(),
+      })),
+    };
   },
 
   async getTradieLeadIntakeInfo(token: string) {
@@ -976,6 +1211,209 @@ export const demoData: DataSource = {
     if (!tradie) return { ok: false, error: "Tradie not found." };
     const token = issueDemoToken("tradie_lead_intake", tradie.id);
     return { ok: true, path: `/l/${token}` };
+  },
+
+  async listTradieJobs(tradiePortalToken: string): Promise<TradieJobSummary[]> {
+    const resolved = demoTokens[tradiePortalToken];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return [];
+    const ACTIVE: RequestState[] = ["scheduled", "in_progress", "evidence_pending", "verified"];
+    return workOrders
+      .filter((w) => w.tradieContactId === resolved.contactId)
+      .map((w) => {
+        const request = requests.find((r) => r.id === w.requestId);
+        if (!request) return null;
+        const state = requestState(request);
+        if (!ACTIVE.includes(state)) return null;
+        const property = properties.find((p) => p.id === request.propertyId);
+        return {
+          workOrderId: w.id,
+          requestId: request.id,
+          requestTitle: request.title,
+          propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
+          category: request.category,
+          state,
+          quoteCents: w.quoteCents,
+          callOutFeeCents: w.callOutFeeCents,
+        };
+      })
+      .filter((j): j is TradieJobSummary => j !== null);
+  },
+
+  async startJob(tradiePortalToken: string, workOrderId: string) {
+    const resolved = demoTokens[tradiePortalToken];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This portal link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+    const current = requestState(request);
+    const result = transition(current, "start_work", "tradie");
+    if (!result.ok) return { ok: false as const, error: `Cannot start a job from state "${current}".` };
+    request.events.push({ eventType: "start_work", actorType: "tradie", actorId: `token:${tradiePortalToken}`, at: new Date().toISOString() });
+    wo.status = result.state;
+    return { ok: true as const };
+  },
+
+  async markJobDone(tradiePortalToken: string, workOrderId: string, note: string) {
+    const resolved = demoTokens[tradiePortalToken];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This portal link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+    const current = requestState(request);
+    const result = transition(current, "submit_evidence", "tradie");
+    if (!result.ok) return { ok: false as const, error: `Cannot mark this done from state "${current}".` };
+    request.events.push({
+      eventType: "submit_evidence",
+      actorType: "tradie",
+      actorId: `token:${tradiePortalToken}`,
+      at: new Date().toISOString(),
+      note,
+    });
+    wo.status = result.state;
+    wo.completionNote = note;
+    return { ok: true as const };
+  },
+
+  async confirmFixed(tenantIntakeToken: string, requestId: string) {
+    const resolved = demoTokens[tenantIntakeToken];
+    if (resolved?.scope !== "tenant_intake") return { ok: false as const, error: "This link isn't active." };
+    const request = requests.find((r) => r.id === requestId && r.propertyId === resolved.aggregateId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+    const current = requestState(request);
+    const result = transition(current, "verify", "tenant");
+    if (!result.ok) return { ok: false as const, error: `Cannot confirm from state "${current}".` };
+    request.events.push({ eventType: "verify", actorType: "tenant", actorId: `token:${tenantIntakeToken}`, at: new Date().toISOString() });
+    const wo = workOrders.find((w) => w.requestId === request.id);
+    if (wo) wo.status = result.state;
+    return { ok: true as const };
+  },
+
+  async invoiceJob(tradiePortalToken: string, workOrderId: string, input: InvoiceJobInput) {
+    const resolved = demoTokens[tradiePortalToken];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This portal link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+    const current = requestState(request);
+    const invoiceResult = transition(current, "invoice", "tradie");
+    if (!invoiceResult.ok) return { ok: false as const, error: `Cannot invoice from state "${current}".` };
+
+    let asset = propertyAssets.find((a) => a.propertyId === request.propertyId && a.category === input.assetCategory);
+    if (asset) {
+      if (input.assetInstalledAt) {
+        asset.label = input.assetLabel;
+        asset.installedAt = input.assetInstalledAt;
+      }
+    } else {
+      asset = {
+        id: `asset-${++demoAssetSeq}`,
+        propertyId: request.propertyId,
+        category: input.assetCategory,
+        label: input.assetLabel,
+        installedAt: input.assetInstalledAt,
+      };
+      propertyAssets.push(asset);
+    }
+
+    const warrantyExpiresAt =
+      input.warrantyMonths > 0 ? new Date(Date.now() + input.warrantyMonths * 30 * 86_400_000).toISOString() : null;
+
+    wo.invoiceCents = input.invoiceCents;
+    wo.callOutFeeCents = input.callOutFeeCents;
+    wo.assetId = asset.id;
+    wo.warrantyExpiresAt = warrantyExpiresAt;
+
+    const now = new Date().toISOString();
+    request.events.push({
+      eventType: "invoice",
+      actorType: "tradie",
+      actorId: `token:${tradiePortalToken}`,
+      at: now,
+      note: `Invoiced ${(input.invoiceCents / 100).toFixed(2)}, warranty ${input.warrantyMonths}mo`,
+    });
+
+    // No payment provider exists yet (documented non-goal) — auto-record and
+    // close immediately rather than leaving the job in limbo.
+    const paidResult = transition(invoiceResult.state, "record_payment", "system");
+    const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+    if (paidResult.ok) {
+      request.events.push({ eventType: "record_payment", actorType: "system", actorId: "auto-payment", at: now });
+    }
+    if (closedResult?.ok) {
+      request.events.push({ eventType: "close", actorType: "system", actorId: "auto-payment", at: now });
+    }
+    wo.status = closedResult?.ok ? closedResult.state : invoiceResult.state;
+
+    return { ok: true as const };
+  },
+
+  async getRequestStatusForContact(tenantIntakeToken: string): Promise<TenantRequestStatus[]> {
+    const resolved = demoTokens[tenantIntakeToken];
+    if (resolved?.scope !== "tenant_intake") return [];
+    return requests
+      .filter((r) => r.propertyId === resolved.aggregateId)
+      .sort((a, b) => b.reportedAt.localeCompare(a.reportedAt))
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        category: r.category,
+        estimateCents: r.estimateCents,
+        state: requestState(r),
+        isWarrantyClaim: Boolean(r.warrantyClaimOfWorkOrderId),
+        events: r.events.map((e) => ({ eventType: e.eventType, actorType: e.actorType, note: e.note, at: e.at })),
+      }));
+  },
+
+  async updatePropertyOwnership(propertyId: string, input: { occupancyStatus: OccupancyStatus; ownerContactId: string | null }) {
+    const property = properties.find((p) => p.id === propertyId);
+    if (!property) return { ok: false as const, error: "Property not found." };
+    property.occupancyStatus = input.occupancyStatus;
+    property.ownerContactId = input.ownerContactId ?? undefined;
+    return { ok: true as const };
+  },
+
+  async getApprovalPolicy(propertyId: string): Promise<ApprovalPolicyRuleView[]> {
+    return approvalPolicyRules
+      .filter((r) => r.propertyId === propertyId)
+      .sort((a, b) => a.priority - b.priority)
+      .map((r) => ({
+        id: r.id,
+        priority: r.priority,
+        maxTotalCents: r.maxTotalCents,
+        minTrustScore: r.minTrustScore,
+        excludeCategories: r.excludeCategories,
+        enabled: r.enabled,
+      }));
+  },
+
+  async saveApprovalPolicy(propertyId: string, rules: ApprovalPolicyRuleInput[]) {
+    const property = properties.find((p) => p.id === propertyId);
+    if (!property) return { ok: false as const, error: "Property not found." };
+    for (let i = approvalPolicyRules.length - 1; i >= 0; i--) {
+      if (approvalPolicyRules[i]!.propertyId === propertyId) approvalPolicyRules.splice(i, 1);
+    }
+    for (const r of rules) {
+      approvalPolicyRules.push({
+        id: `policy-${++demoPolicyRuleSeq}`,
+        propertyId,
+        priority: r.priority,
+        maxTotalCents: r.maxTotalCents,
+        minTrustScore: r.minTrustScore,
+        excludeCategories: r.excludeCategories,
+        enabled: r.enabled,
+      });
+    }
+    return { ok: true as const };
   },
 };
 

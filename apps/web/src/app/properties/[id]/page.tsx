@@ -4,6 +4,8 @@ import { classifyTrust, formatCents, rankQuotes, scoreAvailability, scoreTrust }
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
 import { ApprovalPanel } from "./approval-panel";
+import { OwnershipCard } from "./ownership-card";
+import { PolicyCard, type PolicyCardRule } from "./policy-card";
 import { QuotesPanel, type QuotesPanelQuote } from "./quotes-panel";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +20,15 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
   const data = await getData();
   const property = await data.getProperty(id);
   if (!property) notFound();
+
+  const policyRules = await data.getApprovalPolicy(id);
+  const policyCardRules: PolicyCardRule[] = policyRules
+    .filter((r) => r.enabled)
+    .map((r) => ({
+      maxTotalDisplay: r.maxTotalCents !== null ? (r.maxTotalCents / 100).toFixed(0) : "",
+      minTrustScore: r.minTrustScore,
+      excludesGasElectrical: r.excludeCategories.length > 0,
+    }));
 
   const quotingRequests = property.requests.filter((r) => r.state === "quoting");
   const quotesByRequest = new Map<string, QuotesPanelQuote[]>();
@@ -128,6 +139,30 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
         </table>
       </div>
 
+      {property.openWarranties.length > 0 && (
+        <>
+          <h2 className="mt-8 text-lg font-semibold text-slate-900">Open warranties</h2>
+          <div className="mt-3 space-y-2">
+            {property.openWarranties.map((w, i) => (
+              <div key={i} className="rounded-xl border border-slate-200 bg-white p-3 text-sm">
+                <span className="font-medium text-slate-900">{w.assetLabel}</span>
+                <span className="text-slate-500"> — {w.tradieName}, until {formatDate(new Date(w.expiresAt))}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="mt-8 grid gap-4 sm:grid-cols-2">
+        <OwnershipCard
+          propertyId={property.id}
+          occupancyStatus={property.occupancyStatus}
+          ownerContactId={property.ownerContactId}
+          availableOwners={property.availableOwners}
+        />
+        <PolicyCard propertyId={property.id} existingRules={policyCardRules} />
+      </div>
+
       <h2 className="mt-8 text-lg font-semibold text-slate-900">Maintenance requests</h2>
       <div className="mt-3 space-y-3">
         {property.requests.length === 0 && (
@@ -137,7 +172,14 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
           <div key={r.id} className="rounded-xl border border-slate-200 bg-white p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium text-slate-900">{r.title}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-medium text-slate-900">{r.title}</p>
+                  {r.isWarrantyClaim && (
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                      Warranty claim
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500">
                   {r.category.replace(/_/g, " ")}
                   {r.estimateCents ? ` · est. ${formatCents(r.estimateCents)}` : ""}

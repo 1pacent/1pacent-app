@@ -24,11 +24,22 @@ export interface RequestView {
   category: RequestCategory;
   estimateCents: number | null;
   state: RequestState;
-  events: Array<{ eventType: RequestEvent; actorType: ActorType; note?: string }>;
+  events: Array<{ eventType: RequestEvent; actorType: ActorType; note?: string; at?: string }>;
+  /** Set when this request was routed straight to the original tradie under an open warranty,
+   * bypassing the 3-quote marketplace and the landlord approval gate entirely. */
+  isWarrantyClaim: boolean;
 }
+
+export type OccupancyStatus = "owner_occupied" | "tenanted" | "vacant";
 
 export interface PropertyDetail extends PropertySummary {
   requests: RequestView[];
+  occupancyStatus: OccupancyStatus;
+  ownerContactId: string | null;
+  ownerName: string | null;
+  /** Org's owner-kind contacts, for the ownership editor's picker. */
+  availableOwners: Array<{ id: string; name: string }>;
+  openWarranties: Array<{ assetLabel: string; category: RequestCategory; tradieName: string; expiresAt: string }>;
 }
 
 export interface IntakeContext {
@@ -178,6 +189,7 @@ export interface TradiePortalContext {
 export interface PmPortfolioContext {
   pmName: string;
   properties: PropertyDetail[];
+  batchableCompliance: BatchableComplianceGroup[];
 }
 
 export interface QuoteSummary {
@@ -199,6 +211,77 @@ export interface AcceptQuoteResult {
   state?: RequestState;
   accepted?: { tradieName: string; tradieEmail: string; quoteCents: number; callOutFeeCents: number };
   declined?: Array<{ tradieName: string; tradieEmail: string }>;
+}
+
+export type SubmitQuoteResult =
+  | {
+      ok: true;
+      /** Set when this submission completed the invite round and the ranked #1 quote
+       * satisfied the property's approval policy — auto-accepted with no landlord action. */
+      autoAccepted?: {
+        requestId: string;
+        accepted: { tradieName: string; tradieEmail: string; quoteCents: number; callOutFeeCents: number };
+        declined: Array<{ tradieName: string; tradieEmail: string }>;
+      };
+    }
+  | { ok: false; error: string };
+
+/** Job completion & invoicing (Developer Brief v4 §1) — the tail of the state
+ * machine (scheduled -> in_progress -> evidence_pending -> verified -> invoiced
+ * -> paid -> closed) that nothing wired up until this pass. */
+
+export interface TradieJobSummary {
+  workOrderId: string;
+  requestId: string;
+  requestTitle: string;
+  propertyAddress: string;
+  category: RequestCategory;
+  state: RequestState;
+  quoteCents: number | null;
+  callOutFeeCents: number | null;
+}
+
+export interface InvoiceJobInput {
+  invoiceCents: number;
+  callOutFeeCents: number;
+  /** 0 = no warranty offered on this job. */
+  warrantyMonths: number;
+  assetLabel: string;
+  assetCategory: RequestCategory;
+  assetInstalledAt: string | null;
+}
+
+/** Renter-facing live status tracker (Developer Brief v4 §5). */
+export type TenantRequestStatus = RequestView;
+
+/** Approval policy engine (Developer Brief v4 §3) — evaluated once real quotes
+ * exist, not the intake-time $0-estimate gate that `decideApproval` still governs. */
+
+export interface ApprovalPolicyRuleView {
+  id: string;
+  priority: number;
+  maxTotalCents: number | null;
+  minTrustScore: number | null;
+  excludeCategories: RequestCategory[];
+  enabled: boolean;
+}
+
+export interface ApprovalPolicyRuleInput {
+  priority: number;
+  maxTotalCents: number | null;
+  minTrustScore: number | null;
+  excludeCategories: RequestCategory[];
+  enabled: boolean;
+}
+
+/** PM portfolio compliance batching (Developer Brief v4 §6). */
+export interface BatchableComplianceGroup {
+  requirementKey: string;
+  requirementName: string;
+  suburb: string;
+  propertyAddresses: string[];
+  windowStart: string;
+  windowEnd: string;
 }
 
 export interface DataSource {
@@ -232,7 +315,7 @@ export interface DataSource {
   submitQuoteByToken(
     token: string,
     input: { quoteCents: number; callOutFeeCents: number; note?: string },
-  ): Promise<{ ok: boolean; error?: string }>;
+  ): Promise<SubmitQuoteResult>;
   listQuotesForRequest(requestId: string): Promise<QuoteSummary[]>;
   acceptQuote(requestId: string, quoteId: string): Promise<AcceptQuoteResult>;
 
@@ -278,6 +361,37 @@ export interface DataSource {
   mintPmPortfolioLink(pmContactId: string): Promise<MintLinkResult>;
   mintTradiePortalLink(tradieContactId: string): Promise<MintLinkResult>;
   mintTradieLeadIntakeLink(tradieContactId: string): Promise<MintLinkResult>;
+
+  // Job completion & invoicing — the tail of the state machine, wired up for the first time.
+  listTradieJobs(tradiePortalToken: string): Promise<TradieJobSummary[]>;
+  startJob(tradiePortalToken: string, workOrderId: string): Promise<{ ok: boolean; error?: string }>;
+  markJobDone(
+    tradiePortalToken: string,
+    workOrderId: string,
+    note: string,
+  ): Promise<{ ok: boolean; error?: string }>;
+  confirmFixed(tenantIntakeToken: string, requestId: string): Promise<{ ok: boolean; error?: string }>;
+  invoiceJob(
+    tradiePortalToken: string,
+    workOrderId: string,
+    input: InvoiceJobInput,
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  // Renter live status tracker
+  getRequestStatusForContact(tenantIntakeToken: string): Promise<TenantRequestStatus[]>;
+
+  // Ownership & occupancy graph
+  updatePropertyOwnership(
+    propertyId: string,
+    input: { occupancyStatus: OccupancyStatus; ownerContactId: string | null },
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  // Approval policy — dashboard-managed, per property
+  getApprovalPolicy(propertyId: string): Promise<ApprovalPolicyRuleView[]>;
+  saveApprovalPolicy(
+    propertyId: string,
+    rules: ApprovalPolicyRuleInput[],
+  ): Promise<{ ok: boolean; error?: string }>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

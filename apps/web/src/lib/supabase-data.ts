@@ -1,17 +1,24 @@
 import "server-only";
 import {
   assertCents,
+  computeBatchableCompliance,
   decideApproval,
+  evaluateApprovalPolicy,
   evaluateProperty,
+  findWarrantyMatch,
   hashToken,
   isUrgentCategory,
   issueToken,
   projectState,
+  rankQuotes,
+  scoreAvailability,
+  scoreTrust,
   transition,
   validateQuoteSubmission,
   validateToken,
   REQUEST_EVENTS,
   type ActorType,
+  type ApprovalPolicyRule,
   type EvidenceRecord,
   type RequestCategory,
   type RequestEvent,
@@ -22,10 +29,14 @@ import { serviceClient } from "./supabase";
 import type {
   AcceptQuoteResult,
   ApprovalContext,
+  ApprovalPolicyRuleInput,
+  ApprovalPolicyRuleView,
   DataSource,
   DispatchQuotesResult,
   IntakeContext,
+  InvoiceJobInput,
   MintLinkResult,
+  OccupancyStatus,
   PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
@@ -39,6 +50,8 @@ import type {
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TenantRequestStatus,
+  TradieJobSummary,
   TestLinkTargets,
   TradieLeadConversationContext,
   TradieLeadExtractionInput,
@@ -65,6 +78,8 @@ interface PropertyRow {
   has_pool: boolean;
   auto_approve_cap_cents: number;
   org_id: string;
+  occupancy_status?: "owner_occupied" | "tenanted" | "vacant";
+  owner_contact_id?: string | null;
 }
 
 interface CertRow {
@@ -83,6 +98,7 @@ interface RequestRow {
   status: string;
   estimate_cents: number | null;
   reported_at: string;
+  warranty_claim_of_work_order_id?: string | null;
 }
 
 interface EventRow {
@@ -112,12 +128,14 @@ function toRequestView(row: RequestRow, events: EventRow[]): RequestView {
     category: row.category as RequestCategory,
     estimateCents: row.estimate_cents,
     state: row.status as RequestState,
+    isWarrantyClaim: Boolean(row.warranty_claim_of_work_order_id),
     events: events
       .filter((e) => e.aggregate_id === row.id)
       .map((e) => ({
         eventType: e.event_type as RequestEvent,
         actorType: e.actor_type as ActorType,
         note: typeof e.payload?.note === "string" ? e.payload.note : undefined,
+        at: e.created_at,
       })),
   };
 }
@@ -155,7 +173,7 @@ export const supabaseData: DataSource = {
     const { data: p, error } = await db
       .from("properties")
       .select(
-        "id, address_line1, suburb, state, postcode, jurisdiction, has_gas, has_pool, auto_approve_cap_cents, org_id, compliance_certificates(requirement_key, completed_at, expires_at), maintenance_requests(id, org_id, property_id, title, description, category, status, estimate_cents, reported_at)",
+        "id, address_line1, suburb, state, postcode, jurisdiction, has_gas, has_pool, auto_approve_cap_cents, org_id, occupancy_status, owner_contact_id, compliance_certificates(requirement_key, completed_at, expires_at), maintenance_requests(id, org_id, property_id, title, description, category, status, estimate_cents, reported_at, warranty_claim_of_work_order_id)",
       )
       .eq("id", id)
       .maybeSingle();
@@ -178,11 +196,45 @@ export const supabaseData: DataSource = {
       events = ev as unknown as EventRow[];
     }
     const requests = (property.maintenance_requests ?? []).map((r) => toRequestView(r, events));
+
+    const [{ data: owners }, { data: ownerRow }, { data: warrantyRows }] = await Promise.all([
+      db.from("contacts").select("id, full_name").eq("org_id", property.org_id).eq("kind", "owner"),
+      property.owner_contact_id
+        ? db.from("contacts").select("full_name").eq("id", property.owner_contact_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      db
+        .from("work_orders")
+        .select("warranty_expires_at, tradie_contact_id, contacts(full_name), property_assets!inner(property_id, category, label)")
+        .eq("property_assets.property_id", property.id)
+        .gt("warranty_expires_at", new Date().toISOString()),
+    ]);
+
     return {
       id: property.id,
       address: property.address_line1,
       suburb: `${property.suburb} ${property.state} ${property.postcode}`,
       autoApproveCapCents: Number(property.auto_approve_cap_cents),
+      occupancyStatus: (property.occupancy_status ?? "tenanted") as PropertyDetail["occupancyStatus"],
+      ownerContactId: property.owner_contact_id ?? null,
+      ownerName: (ownerRow as { full_name: string } | null)?.full_name ?? null,
+      availableOwners: ((owners ?? []) as Array<{ id: string; full_name: string }>).map((o) => ({
+        id: o.id,
+        name: o.full_name,
+      })),
+      openWarranties: ((warrantyRows ?? []) as Array<{
+        warranty_expires_at: string;
+        contacts: { full_name: string } | { full_name: string }[] | null;
+        property_assets: { category: string; label: string } | { category: string; label: string }[] | null;
+      }>).map((w) => {
+        const tradie = Array.isArray(w.contacts) ? w.contacts[0] : w.contacts;
+        const asset = Array.isArray(w.property_assets) ? w.property_assets[0] : w.property_assets;
+        return {
+          assetLabel: asset?.label ?? "Unknown asset",
+          category: (asset?.category ?? "other") as RequestCategory,
+          tradieName: tradie?.full_name ?? "Unknown",
+          expiresAt: w.warranty_expires_at,
+        };
+      }),
       compliance: evaluateProperty(
         { jurisdiction: property.jurisdiction, hasGas: property.has_gas, hasPool: property.has_pool },
         toEvidence(property.compliance_certificates ?? []),
@@ -486,18 +538,58 @@ export const supabaseData: DataSource = {
       .maybeSingle();
     if (!prop) return { ok: false as const, error: "Property not found." };
 
+    // Warranty-aware routing (Developer Brief v4 §2): if an already-completed
+    // job on this property, same category, is still under warranty, skip the
+    // urgent/approval gate and the 3-quote marketplace entirely — route
+    // straight back to the original tradie.
+    const { data: warrantyRows } = await db
+      .from("work_orders")
+      .select("id, tradie_contact_id, warranty_expires_at, property_assets!inner(id, property_id, category)")
+      .eq("property_assets.property_id", prop.id)
+      .not("warranty_expires_at", "is", null);
+    const warrantyCandidates = ((warrantyRows ?? []) as Array<{
+      id: string;
+      tradie_contact_id: string;
+      warranty_expires_at: string;
+      property_assets: { id: string; category: string } | { id: string; category: string }[] | null;
+    }>)
+      .map((w) => {
+        const asset = Array.isArray(w.property_assets) ? w.property_assets[0] : w.property_assets;
+        return asset
+          ? {
+              workOrderId: w.id,
+              tradieContactId: w.tradie_contact_id,
+              assetId: asset.id,
+              category: asset.category as RequestCategory,
+              warrantyExpiresAt: new Date(w.warranty_expires_at),
+            }
+          : null;
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null);
+    const warrantyMatch = findWarrantyMatch(warrantyCandidates, extraction.category, new Date());
+
     const urgent = isUrgentCategory(extraction.category);
     const decision = decideApproval({
       category: extraction.category,
       estimateCents: 0,
       policy: { autoApproveCapCents: Number(prop.auto_approve_cap_cents) },
     });
-    const followUp: RequestEvent =
-      urgent && decision.outcome === "auto_approved" ? "auto_approve" : "request_approval";
-    const state = projectState([
-      { eventType: "triage", actorType: "system" },
-      { eventType: followUp, actorType: "system" },
-    ]);
+    const followUp: RequestEvent = warrantyMatch
+      ? "auto_approve"
+      : urgent && decision.outcome === "auto_approved"
+        ? "auto_approve"
+        : "request_approval";
+    const eventChain: Array<{ eventType: RequestEvent; actorType: ActorType }> = warrantyMatch
+      ? [
+          { eventType: "triage", actorType: "system" },
+          { eventType: "auto_approve", actorType: "system" },
+          { eventType: "schedule", actorType: "system" },
+        ]
+      : [
+          { eventType: "triage", actorType: "system" },
+          { eventType: followUp, actorType: "system" },
+        ];
+    const state = projectState(eventChain);
 
     const { data: req, error: reqError } = await db
       .from("maintenance_requests")
@@ -509,6 +601,7 @@ export const supabaseData: DataSource = {
         category: extraction.category,
         is_urgent: urgent,
         status: state,
+        warranty_claim_of_work_order_id: warrantyMatch?.workOrderId ?? null,
       })
       .select("id")
       .single();
@@ -520,27 +613,62 @@ export const supabaseData: DataSource = {
       aggregate_id: req.id,
       actor_type: "system",
     };
-    const { error: evError } = await db.from("events").insert([
-      {
-        ...base,
-        event_type: "triage",
-        actor_id: "sally",
-        payload: { source: "sally_conversation", conversation_id: conversationId },
-        ai_meta: extraction.aiMeta,
-      },
-      {
-        ...base,
-        event_type: followUp,
-        actor_id: "approval-rules",
-        payload: {
-          note:
-            followUp === "auto_approve"
-              ? "Urgent bypass (VIC urgent repairs list)"
-              : "Routed to landlord approval",
-        },
-      },
-    ]);
+    const events = warrantyMatch
+      ? [
+          {
+            ...base,
+            event_type: "triage",
+            actor_id: "sally",
+            payload: { source: "sally_conversation", conversation_id: conversationId },
+            ai_meta: extraction.aiMeta,
+          },
+          {
+            ...base,
+            event_type: "auto_approve",
+            actor_id: "warranty-routing",
+            payload: { note: "Warranty claim — routed to the original tradie, no marketplace round." },
+          },
+          {
+            ...base,
+            event_type: "schedule",
+            actor_id: "warranty-routing",
+            payload: { note: "Dispatched directly under an open warranty." },
+          },
+        ]
+      : [
+          {
+            ...base,
+            event_type: "triage",
+            actor_id: "sally",
+            payload: { source: "sally_conversation", conversation_id: conversationId },
+            ai_meta: extraction.aiMeta,
+          },
+          {
+            ...base,
+            event_type: followUp,
+            actor_id: "approval-rules",
+            payload: {
+              note:
+                followUp === "auto_approve"
+                  ? "Urgent bypass (VIC urgent repairs list)"
+                  : "Routed to landlord approval",
+            },
+          },
+        ];
+    const { error: evError } = await db.from("events").insert(events);
     if (evError) return { ok: false as const, error: `Could not record events: ${evError.message}` };
+
+    if (warrantyMatch) {
+      await db.from("work_orders").insert({
+        org_id: prop.org_id,
+        request_id: req.id,
+        tradie_contact_id: warrantyMatch.tradieContactId,
+        status: "scheduled",
+        quote_cents: 0,
+        call_out_fee_cents: 0,
+        asset_id: warrantyMatch.assetId,
+      });
+    }
 
     await db
       .from("sally_conversations")
@@ -736,7 +864,86 @@ export const supabaseData: DataSource = {
       actor_id: `token:${resolved.id}`,
     });
     await db.from("access_tokens").update({ used_at: new Date().toISOString() }).eq("id", resolved.id);
-    return { ok: true as const };
+
+    // Approval policy (Developer Brief v4 §3): once every invited quote for this
+    // request has resolved (submitted or declined), rank them exactly like the
+    // landlord's manual view does and check whether the property's policy
+    // pre-approves the winner — evaluated against a real price, unlike the
+    // intake-time gate which never sees one.
+    const { data: quoteRow } = await db.from("quotes").select("request_id").eq("id", quote.id).maybeSingle();
+    if (!quoteRow) return { ok: true as const };
+
+    const { data: siblingQuotes } = await db
+      .from("quotes")
+      .select("status")
+      .eq("request_id", quoteRow.request_id);
+    const stillInvited = (siblingQuotes ?? []).some((q) => q.status === "invited");
+    if (stillInvited) return { ok: true as const };
+
+    const { data: reqRow } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, category, status")
+      .eq("id", quoteRow.request_id)
+      .maybeSingle();
+    if (!reqRow || (reqRow.status as RequestState) !== "quoting") return { ok: true as const };
+
+    const [allQuotes, trust, policyRules] = await Promise.all([
+      supabaseData.listQuotesForRequest(reqRow.id),
+      (async () => {
+        const { data: submittedTradies } = await db
+          .from("quotes")
+          .select("tradie_contact_id")
+          .eq("request_id", reqRow.id)
+          .eq("status", "submitted");
+        const ids = [...new Set((submittedTradies ?? []).map((r) => r.tradie_contact_id as string))];
+        return supabaseData.getTradieTrustSummaries(ids);
+      })(),
+      db
+        .from("approval_policy_rules")
+        .select("max_total_cents, min_trust_score, exclude_categories")
+        .eq("property_id", reqRow.property_id)
+        .eq("enabled", true)
+        .order("priority", { ascending: true }),
+    ]);
+
+    const rankable = allQuotes
+      .filter((q) => q.status === "submitted" && q.quoteCents !== null && q.callOutFeeCents !== null)
+      .map((q) => ({
+        quoteId: q.quoteId,
+        totalCents: q.quoteCents! + q.callOutFeeCents!,
+        trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+        availabilityScore: scoreAvailability({
+          tradieRespondedWithinMinutes: q.respondedWithinMinutes,
+          matchesTenantPreferredWindow: false,
+          currentOpenJobCount: 0,
+        }),
+      }));
+    if (rankable.length === 0) return { ok: true as const };
+    const ranked = rankQuotes(rankable);
+    const winner = ranked[0]!;
+
+    const rules: ApprovalPolicyRule[] = ((policyRules.data ?? []) as Array<{
+      max_total_cents: number | null;
+      min_trust_score: number | null;
+      exclude_categories: string[];
+    }>).map((r) => ({
+      maxTotalCents: r.max_total_cents,
+      minTrustScore: r.min_trust_score,
+      excludeCategories: (r.exclude_categories ?? []) as RequestCategory[],
+    }));
+    const policyResult = evaluateApprovalPolicy(rules, {
+      category: reqRow.category as RequestCategory,
+      totalCents: winner.totalCents,
+      trustScore: winner.trustScore,
+    });
+    if (!policyResult.autoApprove) return { ok: true as const };
+
+    const acceptResult = await acceptQuoteTx(db, reqRow, winner.quoteId, "system", "approval-policy");
+    if (!acceptResult.ok || !acceptResult.accepted || !acceptResult.declined) return { ok: true as const };
+    return {
+      ok: true as const,
+      autoAccepted: { requestId: reqRow.id, accepted: acceptResult.accepted, declined: acceptResult.declined },
+    };
   },
 
   async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
@@ -760,78 +967,7 @@ export const supabaseData: DataSource = {
       .eq("id", requestId)
       .maybeSingle();
     if (!req) return { ok: false, error: "Request not found." };
-
-    const current = req.status as RequestState;
-    const result = transition(current, "accept_quote", "landlord");
-    if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
-
-    const { data: allQuotes } = await db
-      .from("quotes")
-      .select("id, tradie_contact_id, status, quote_cents, call_out_fee_cents, contacts(full_name, email)")
-      .eq("request_id", requestId);
-    const rows = (allQuotes ?? []) as unknown as QuoteJoinRow[];
-    const accepted = rows.find((q) => q.id === quoteId);
-    if (!accepted) return { ok: false, error: "Quote not found for this request." };
-    if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
-
-    await db.from("events").insert({
-      org_id: req.org_id,
-      aggregate_type: "maintenance_request",
-      aggregate_id: req.id,
-      event_type: "accept_quote",
-      actor_type: "landlord",
-      actor_id: "dashboard",
-    });
-    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
-
-    await db.from("quotes").update({ status: "accepted" }).eq("id", accepted.id);
-    await db.from("events").insert({
-      org_id: req.org_id,
-      aggregate_type: "quote",
-      aggregate_id: accepted.id,
-      event_type: "quote_accepted",
-      actor_type: "landlord",
-      actor_id: "dashboard",
-    });
-
-    await db.from("work_orders").insert({
-      org_id: req.org_id,
-      request_id: req.id,
-      tradie_contact_id: accepted.tradie_contact_id,
-      status: "scheduled",
-      quote_cents: accepted.quote_cents,
-      call_out_fee_cents: accepted.call_out_fee_cents,
-      quote_id: accepted.id,
-    });
-
-    const declined = rows.filter((q) => q.id !== quoteId);
-    for (const q of declined) {
-      await db.from("quotes").update({ status: "not_selected" }).eq("id", q.id);
-      await db.from("events").insert({
-        org_id: req.org_id,
-        aggregate_type: "quote",
-        aggregate_id: q.id,
-        event_type: "quote_declined",
-        actor_type: "landlord",
-        actor_id: "dashboard",
-      });
-    }
-
-    const acceptedContact = normalizeContact(accepted.contacts);
-    return {
-      ok: true,
-      state: result.state,
-      accepted: {
-        tradieName: acceptedContact?.full_name ?? "",
-        tradieEmail: acceptedContact?.email ?? "",
-        quoteCents: accepted.quote_cents ?? 0,
-        callOutFeeCents: accepted.call_out_fee_cents ?? 0,
-      },
-      declined: declined.map((q) => {
-        const c = normalizeContact(q.contacts);
-        return { tradieName: c?.full_name ?? "", tradieEmail: c?.email ?? "" };
-      }),
-    };
+    return acceptQuoteTx(db, req, quoteId, "landlord", "dashboard");
   },
 
   async getComparableJobs(propertyId: string, category: RequestCategory) {
@@ -1034,7 +1170,22 @@ export const supabaseData: DataSource = {
       await Promise.all(ids.map((id) => this.getProperty(id)))
     ).filter((p): p is PropertyDetail => p !== null);
 
-    return { pmName: contact.full_name as string, properties };
+    const batches = computeBatchableCompliance(
+      properties.map((p) => ({ address: p.address, suburb: p.suburb, compliance: p.compliance })),
+    );
+
+    return {
+      pmName: contact.full_name as string,
+      properties,
+      batchableCompliance: batches.map((b) => ({
+        requirementKey: b.requirementKey,
+        requirementName: b.requirementName,
+        suburb: b.suburb,
+        propertyAddresses: b.propertyAddresses,
+        windowStart: b.windowStart.toISOString(),
+        windowEnd: b.windowEnd.toISOString(),
+      })),
+    };
   },
 
   async getTradieLeadIntakeInfo(token: string) {
@@ -1317,6 +1468,334 @@ export const supabaseData: DataSource = {
     if (error) return { ok: false, error: error.message };
     return { ok: true, path: `/l/${issued.token}` };
   },
+
+  async listTradieJobs(tradiePortalToken: string): Promise<TradieJobSummary[]> {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return [];
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("work_orders")
+      .select(
+        "id, request_id, quote_cents, call_out_fee_cents, maintenance_requests!work_orders_request_id_fkey!inner(id, title, category, status, property_id, properties(address_line1, suburb, state, postcode))",
+      )
+      .eq("tradie_contact_id", resolved.contact_id)
+      .in("maintenance_requests.status", ["scheduled", "in_progress", "evidence_pending", "verified"])
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(`listTradieJobs: ${error.message}`);
+    return ((data ?? []) as Array<{
+      id: string;
+      request_id: string;
+      quote_cents: number | null;
+      call_out_fee_cents: number | null;
+      maintenance_requests:
+        | {
+            title: string;
+            category: string;
+            status: string;
+            properties: { address_line1: string; suburb: string; state: string; postcode: string } | { address_line1: string; suburb: string; state: string; postcode: string }[] | null;
+          }
+        | Array<{
+            title: string;
+            category: string;
+            status: string;
+            properties: { address_line1: string; suburb: string; state: string; postcode: string } | { address_line1: string; suburb: string; state: string; postcode: string }[] | null;
+          }>
+        | null;
+    }>).map((row) => {
+      const req = Array.isArray(row.maintenance_requests) ? row.maintenance_requests[0] : row.maintenance_requests;
+      const prop = req ? (Array.isArray(req.properties) ? req.properties[0] : req.properties) : null;
+      return {
+        workOrderId: row.id,
+        requestId: row.request_id,
+        requestTitle: req?.title ?? "",
+        propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+        category: (req?.category ?? "other") as RequestCategory,
+        state: (req?.status ?? "scheduled") as RequestState,
+        quoteCents: row.quote_cents,
+        callOutFeeCents: row.call_out_fee_cents,
+      };
+    });
+  },
+
+  async startJob(tradiePortalToken: string, workOrderId: string) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This portal link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    const result = transition(req.status as RequestState, "start_work", "tradie");
+    if (!result.ok) return { ok: false, error: `Cannot start a job from state "${req.status}".` };
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "start_work",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+    await db.from("work_orders").update({ status: result.state }).eq("id", wo.id);
+    return { ok: true };
+  },
+
+  async markJobDone(tradiePortalToken: string, workOrderId: string, note: string) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This portal link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    const result = transition(req.status as RequestState, "submit_evidence", "tradie");
+    if (!result.ok) return { ok: false, error: `Cannot mark this done from state "${req.status}".` };
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "submit_evidence",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+      payload: { note },
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+    await db.from("work_orders").update({ status: result.state, completion_note: note }).eq("id", wo.id);
+    return { ok: true };
+  },
+
+  async confirmFixed(tenantIntakeToken: string, requestId: string) {
+    const resolved = await resolveToken(tenantIntakeToken, "tenant_intake");
+    if (!resolved?.aggregate_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req || req.property_id !== resolved.aggregate_id) return { ok: false, error: "Request not found." };
+    const result = transition(req.status as RequestState, "verify", "tenant");
+    if (!result.ok) return { ok: false, error: `Cannot confirm from state "${req.status}".` };
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "verify",
+      actor_type: "tenant",
+      actor_id: `token:${resolved.id}`,
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+    await db.from("work_orders").update({ status: result.state }).eq("request_id", req.id);
+    return { ok: true };
+  },
+
+  async invoiceJob(tradiePortalToken: string, workOrderId: string, input: InvoiceJobInput) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This portal link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, status")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+
+    const invoiceResult = transition(req.status as RequestState, "invoice", "tradie");
+    if (!invoiceResult.ok) return { ok: false, error: `Cannot invoice from state "${req.status}".` };
+
+    // Asset registry (Developer Brief v4 §2): find or create the matching asset —
+    // built as a byproduct of invoicing, never extra landlord admin.
+    let assetId: string | null = null;
+    const { data: existingAsset } = await db
+      .from("property_assets")
+      .select("id")
+      .eq("property_id", req.property_id)
+      .eq("category", input.assetCategory)
+      .maybeSingle();
+    if (existingAsset) {
+      assetId = existingAsset.id;
+      if (input.assetInstalledAt) {
+        await db
+          .from("property_assets")
+          .update({ label: input.assetLabel, installed_at: input.assetInstalledAt })
+          .eq("id", assetId);
+      }
+    } else {
+      const { data: created } = await db
+        .from("property_assets")
+        .insert({
+          org_id: req.org_id,
+          property_id: req.property_id,
+          category: input.assetCategory,
+          label: input.assetLabel,
+          installed_at: input.assetInstalledAt,
+        })
+        .select("id")
+        .single();
+      assetId = created?.id ?? null;
+    }
+
+    const warrantyExpiresAt =
+      input.warrantyMonths > 0 ? new Date(Date.now() + input.warrantyMonths * 30 * 86_400_000).toISOString() : null;
+
+    await db
+      .from("work_orders")
+      .update({
+        invoice_cents: input.invoiceCents,
+        call_out_fee_cents: input.callOutFeeCents,
+        asset_id: assetId,
+        warranty_expires_at: warrantyExpiresAt,
+      })
+      .eq("id", wo.id);
+
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "invoice",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+      payload: { invoiceCents: input.invoiceCents, warrantyMonths: input.warrantyMonths },
+    });
+
+    // No payment provider exists yet (documented non-goal) — auto-record and
+    // close immediately rather than leaving the job in limbo.
+    const paidResult = transition(invoiceResult.state, "record_payment", "system");
+    const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+    const finalState = closedResult?.ok ? closedResult.state : invoiceResult.state;
+
+    const systemBase = {
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      actor_type: "system",
+      actor_id: "auto-payment",
+    };
+    const trailingEvents: Array<Record<string, unknown>> = [];
+    if (paidResult.ok) trailingEvents.push({ ...systemBase, event_type: "record_payment" });
+    if (closedResult?.ok) trailingEvents.push({ ...systemBase, event_type: "close" });
+    if (trailingEvents.length > 0) {
+      await db.from("events").insert(trailingEvents);
+    }
+
+    await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
+    await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
+
+    return { ok: true };
+  },
+
+  async getRequestStatusForContact(tenantIntakeToken: string): Promise<TenantRequestStatus[]> {
+    const resolved = await resolveToken(tenantIntakeToken, "tenant_intake");
+    if (!resolved?.aggregate_id) return [];
+    const db = serviceClient();
+    const { data: reqs } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, title, description, category, status, estimate_cents, reported_at, warranty_claim_of_work_order_id")
+      .eq("property_id", resolved.aggregate_id)
+      .order("reported_at", { ascending: false });
+    const rows = (reqs ?? []) as RequestRow[];
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const { data: ev } = await db
+      .from("events")
+      .select("aggregate_id, event_type, actor_type, actor_id, payload, created_at")
+      .eq("aggregate_type", "maintenance_request")
+      .in("aggregate_id", ids)
+      .order("id", { ascending: true });
+    const events = (ev ?? []) as EventRow[];
+    return rows.map((r) => toRequestView(r, events));
+  },
+
+  async updatePropertyOwnership(propertyId: string, input: { occupancyStatus: OccupancyStatus; ownerContactId: string | null }) {
+    const db = serviceClient();
+    const { data: prop } = await db.from("properties").select("id, org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return { ok: false, error: "Property not found." };
+    const { error } = await db
+      .from("properties")
+      .update({ occupancy_status: input.occupancyStatus, owner_contact_id: input.ownerContactId })
+      .eq("id", propertyId);
+    if (error) return { ok: false, error: error.message };
+    await db.from("events").insert({
+      org_id: prop.org_id,
+      aggregate_type: "property",
+      aggregate_id: propertyId,
+      event_type: "ownership_recorded",
+      actor_type: "landlord",
+      actor_id: "dashboard",
+      payload: { occupancyStatus: input.occupancyStatus, ownerContactId: input.ownerContactId },
+    });
+    return { ok: true };
+  },
+
+  async getApprovalPolicy(propertyId: string): Promise<ApprovalPolicyRuleView[]> {
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("approval_policy_rules")
+      .select("id, priority, max_total_cents, min_trust_score, exclude_categories, enabled")
+      .eq("property_id", propertyId)
+      .order("priority", { ascending: true });
+    if (error) throw new Error(`getApprovalPolicy: ${error.message}`);
+    return ((data ?? []) as Array<{
+      id: string;
+      priority: number;
+      max_total_cents: number | null;
+      min_trust_score: number | null;
+      exclude_categories: string[];
+      enabled: boolean;
+    }>).map((r) => ({
+      id: r.id,
+      priority: r.priority,
+      maxTotalCents: r.max_total_cents,
+      minTrustScore: r.min_trust_score,
+      excludeCategories: (r.exclude_categories ?? []) as RequestCategory[],
+      enabled: r.enabled,
+    }));
+  },
+
+  async saveApprovalPolicy(propertyId: string, rules: ApprovalPolicyRuleInput[]) {
+    const db = serviceClient();
+    const { data: prop } = await db.from("properties").select("id, org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return { ok: false, error: "Property not found." };
+    const { error: delError } = await db.from("approval_policy_rules").delete().eq("property_id", propertyId);
+    if (delError) return { ok: false, error: delError.message };
+    if (rules.length > 0) {
+      const { error: insError } = await db.from("approval_policy_rules").insert(
+        rules.map((r) => ({
+          org_id: prop.org_id,
+          property_id: propertyId,
+          priority: r.priority,
+          max_total_cents: r.maxTotalCents,
+          min_trust_score: r.minTrustScore,
+          exclude_categories: r.excludeCategories,
+          enabled: r.enabled,
+        })),
+      );
+      if (insError) return { ok: false, error: insError.message };
+    }
+    return { ok: true };
+  },
 };
 
 interface ContactJoin {
@@ -1357,6 +1836,88 @@ function toQuoteSummary(row: QuoteJoinRow): QuoteSummary {
     callOutFeeCents: row.call_out_fee_cents,
     note: row.note ?? null,
     respondedWithinMinutes,
+  };
+}
+
+/** Shared by the landlord's manual accept click and the approval-policy
+ * auto-accept path — same sequence, different actor. */
+async function acceptQuoteTx(
+  db: ReturnType<typeof serviceClient>,
+  req: { id: string; org_id: string; status: string },
+  quoteId: string,
+  actorType: ActorType,
+  actorId: string,
+): Promise<AcceptQuoteResult> {
+  const current = req.status as RequestState;
+  const result = transition(current, "accept_quote", actorType);
+  if (!result.ok) return { ok: false, error: `Cannot accept a quote from state "${current}".` };
+
+  const { data: allQuotes } = await db
+    .from("quotes")
+    .select("id, tradie_contact_id, status, quote_cents, call_out_fee_cents, contacts(full_name, email)")
+    .eq("request_id", req.id);
+  const rows = (allQuotes ?? []) as unknown as QuoteJoinRow[];
+  const accepted = rows.find((q) => q.id === quoteId);
+  if (!accepted) return { ok: false, error: "Quote not found for this request." };
+  if (accepted.status !== "submitted") return { ok: false, error: "Only a submitted quote can be accepted." };
+
+  await db.from("events").insert({
+    org_id: req.org_id,
+    aggregate_type: "maintenance_request",
+    aggregate_id: req.id,
+    event_type: "accept_quote",
+    actor_type: actorType,
+    actor_id: actorId,
+  });
+  await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+
+  await db.from("quotes").update({ status: "accepted" }).eq("id", accepted.id);
+  await db.from("events").insert({
+    org_id: req.org_id,
+    aggregate_type: "quote",
+    aggregate_id: accepted.id,
+    event_type: "quote_accepted",
+    actor_type: actorType,
+    actor_id: actorId,
+  });
+
+  await db.from("work_orders").insert({
+    org_id: req.org_id,
+    request_id: req.id,
+    tradie_contact_id: accepted.tradie_contact_id,
+    status: "scheduled",
+    quote_cents: accepted.quote_cents,
+    call_out_fee_cents: accepted.call_out_fee_cents,
+    quote_id: accepted.id,
+  });
+
+  const declined = rows.filter((q) => q.id !== quoteId);
+  for (const q of declined) {
+    await db.from("quotes").update({ status: "not_selected" }).eq("id", q.id);
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "quote",
+      aggregate_id: q.id,
+      event_type: "quote_declined",
+      actor_type: actorType,
+      actor_id: actorId,
+    });
+  }
+
+  const acceptedContact = normalizeContact(accepted.contacts);
+  return {
+    ok: true,
+    state: result.state,
+    accepted: {
+      tradieName: acceptedContact?.full_name ?? "",
+      tradieEmail: acceptedContact?.email ?? "",
+      quoteCents: accepted.quote_cents ?? 0,
+      callOutFeeCents: accepted.call_out_fee_cents ?? 0,
+    },
+    declined: declined.map((q) => {
+      const c = normalizeContact(q.contacts);
+      return { tradieName: c?.full_name ?? "", tradieEmail: c?.email ?? "" };
+    }),
   };
 }
 

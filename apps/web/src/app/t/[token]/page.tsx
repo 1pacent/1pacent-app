@@ -1,5 +1,6 @@
 import { formatCents } from "@1pacent/core";
 import { getData } from "@/lib/data";
+import { JobsPanel, type JobsPanelJob } from "./jobs-panel";
 import { RateCardForm } from "./rate-card-form";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,20 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
     );
   }
 
-  const leads = await data.listTradieLeads(token);
+  const [leads, tradieJobs] = await Promise.all([data.listTradieLeads(token), data.listTradieJobs(token)]);
+  const jobs: JobsPanelJob[] = tradieJobs.map((j) => ({
+    workOrderId: j.workOrderId,
+    category: j.category,
+    requestTitle: j.requestTitle,
+    propertyAddress: j.propertyAddress,
+    stateLabel: j.state as JobsPanelJob["stateLabel"],
+    quoteDisplay:
+      j.quoteCents === 0 && j.callOutFeeCents === 0
+        ? "Warranty claim — no charge"
+        : j.quoteCents !== null && j.callOutFeeCents !== null
+          ? `${formatCents(j.quoteCents + j.callOutFeeCents)} total`
+          : "Pending quote",
+  }));
 
   return (
     <div className="mx-auto max-w-xl">
@@ -28,6 +42,11 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
         Sally answers your missed calls in your business&apos;s name, using your own rate card below — for
         1Pacent jobs and for your own customers, from your own lead-intake link.
       </p>
+
+      <div className="mb-8 rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">My jobs</h2>
+        <JobsPanel token={token} jobs={jobs} />
+      </div>
 
       <div className="mb-8 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-slate-900">Your leads</h2>
