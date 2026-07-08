@@ -1,5 +1,6 @@
 import "server-only";
 import {
+  assertCents,
   decideApproval,
   evaluateProperty,
   hashToken,
@@ -24,16 +25,23 @@ import type {
   DataSource,
   DispatchQuotesResult,
   IntakeContext,
+  PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
   QuoteContext,
   QuoteInvite,
   QuoteSummary,
+  RateCard,
+  RateCardItem,
   RequestView,
   SallyConversationContext,
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TradieLeadConversationContext,
+  TradieLeadExtractionInput,
+  TradieLeadSummary,
+  TradiePortalContext,
 } from "./data-types";
 
 /**
@@ -601,7 +609,7 @@ export const supabaseData: DataSource = {
     if (!quote) return null;
     const { data: req } = await db
       .from("maintenance_requests")
-      .select("title, description, property_id")
+      .select("title, description, property_id, category")
       .eq("id", quote.request_id)
       .maybeSingle();
     if (!req) return null;
@@ -615,12 +623,38 @@ export const supabaseData: DataSource = {
       .select("full_name")
       .eq("id", quote.tradie_contact_id)
       .maybeSingle();
+
+    // Auto-populate from the tradie's own rate card — never AI-invented (product brief §5.4.4).
+    let suggestedQuoteCents: number | undefined;
+    let suggestedCallOutFeeCents: number | undefined;
+    const { data: rateCard } = await db
+      .from("tradie_rate_cards")
+      .select("id, call_out_fee_cents, hourly_rate_cents")
+      .eq("tradie_contact_id", quote.tradie_contact_id)
+      .maybeSingle();
+    if (rateCard) {
+      suggestedCallOutFeeCents = rateCard.call_out_fee_cents;
+      const { data: item } = await db
+        .from("tradie_rate_card_items")
+        .select("flat_price_cents, typical_minutes")
+        .eq("rate_card_id", rateCard.id)
+        .eq("category", req.category)
+        .maybeSingle();
+      if (item?.flat_price_cents != null) {
+        suggestedQuoteCents = item.flat_price_cents;
+      } else if (item?.typical_minutes != null) {
+        suggestedQuoteCents = Math.round((rateCard.hourly_rate_cents * item.typical_minutes) / 60);
+      }
+    }
+
     return {
       quoteId: quote.id,
       requestTitle: req.title,
       requestDescription: req.description,
       propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
       tradieName: (tradie?.full_name as string | undefined) ?? "there",
+      suggestedQuoteCents,
+      suggestedCallOutFeeCents,
     };
   },
 
@@ -678,7 +712,9 @@ export const supabaseData: DataSource = {
     const db = serviceClient();
     const { data, error } = await db
       .from("quotes")
-      .select("id, tradie_contact_id, status, quote_cents, call_out_fee_cents, note, contacts(full_name, email)")
+      .select(
+        "id, tradie_contact_id, status, quote_cents, call_out_fee_cents, note, created_at, submitted_at, contacts(full_name, email)",
+      )
       .eq("request_id", requestId)
       .order("created_at", { ascending: true });
     if (error) throw new Error(`listQuotesForRequest: ${error.message}`);
@@ -767,6 +803,46 @@ export const supabaseData: DataSource = {
     };
   },
 
+  async getComparableJobs(propertyId: string, category: RequestCategory) {
+    const db = serviceClient();
+    const { data: prop } = await db.from("properties").select("org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return [];
+    const { data, error } = await db
+      .from("work_orders")
+      .select("invoice_cents, maintenance_requests!inner(org_id, category)")
+      .eq("maintenance_requests.org_id", prop.org_id)
+      .eq("maintenance_requests.category", category)
+      .not("invoice_cents", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) throw new Error(`getComparableJobs: ${error.message}`);
+    return ((data ?? []) as Array<{ invoice_cents: number | null }>)
+      .filter((r): r is { invoice_cents: number } => r.invoice_cents !== null)
+      .map((r) => ({ finalInvoiceCents: r.invoice_cents }));
+  },
+
+  async getTypicalResponseMinutes(propertyId: string, category: RequestCategory) {
+    const db = serviceClient();
+    const { data: prop } = await db.from("properties").select("org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return null;
+    const { data, error } = await db
+      .from("quotes")
+      .select("created_at, submitted_at, maintenance_requests!inner(org_id, category)")
+      .eq("maintenance_requests.org_id", prop.org_id)
+      .eq("maintenance_requests.category", category)
+      .not("submitted_at", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (error) throw new Error(`getTypicalResponseMinutes: ${error.message}`);
+    const minutes = ((data ?? []) as Array<{ created_at: string; submitted_at: string | null }>)
+      .filter((r): r is { created_at: string; submitted_at: string } => r.submitted_at !== null)
+      .map((r) => (new Date(r.submitted_at).getTime() - new Date(r.created_at).getTime()) / 60_000)
+      .filter((m) => m > 0);
+    if (minutes.length === 0) return null;
+    const sorted = minutes.sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)]!;
+  },
+
   async getTradieTrustSummaries(tradieContactIds: string[]) {
     if (tradieContactIds.length === 0) return {};
     const db = serviceClient();
@@ -788,6 +864,313 @@ export const supabaseData: DataSource = {
     }
     return summaries;
   },
+
+  async getTradiePortalContext(token: string): Promise<TradiePortalContext | null> {
+    const resolved = await resolveToken(token, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const { data: contact } = await db
+      .from("contacts")
+      .select("full_name")
+      .eq("id", resolved.contact_id)
+      .maybeSingle();
+    if (!contact) return null;
+
+    const { data: card } = await db
+      .from("tradie_rate_cards")
+      .select("id, call_out_fee_cents, hourly_rate_cents")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .maybeSingle();
+
+    let rateCard: RateCard | null = null;
+    if (card) {
+      const { data: items } = await db
+        .from("tradie_rate_card_items")
+        .select("category, flat_price_cents, typical_minutes")
+        .eq("rate_card_id", card.id);
+      rateCard = {
+        callOutFeeCents: card.call_out_fee_cents,
+        hourlyRateCents: card.hourly_rate_cents,
+        items: ((items ?? []) as Array<{ category: string; flat_price_cents: number | null; typical_minutes: number | null }>).map(
+          (i) => ({
+            category: i.category as RequestCategory,
+            flatPriceCents: i.flat_price_cents,
+            typicalMinutes: i.typical_minutes,
+          }),
+        ),
+      };
+    }
+
+    return { tradieContactId: resolved.contact_id, tradieName: contact.full_name as string, rateCard };
+  },
+
+  async saveRateCard(
+    token: string,
+    input: { callOutFeeCents: number; hourlyRateCents: number; items: RateCardItem[] },
+  ) {
+    const resolved = await resolveToken(token, "tradie_portal");
+    if (!resolved?.contact_id) {
+      return { ok: false as const, error: "This link is invalid or has expired." };
+    }
+    try {
+      assertCents(input.callOutFeeCents);
+      assertCents(input.hourlyRateCents);
+      for (const item of input.items) {
+        if (item.flatPriceCents !== null) assertCents(item.flatPriceCents);
+        if (item.typicalMinutes !== null && item.typicalMinutes <= 0) {
+          throw new RangeError("typicalMinutes must be positive");
+        }
+      }
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : "Invalid rate card values." };
+    }
+
+    const db = serviceClient();
+    const { data: contact } = await db
+      .from("contacts")
+      .select("org_id")
+      .eq("id", resolved.contact_id)
+      .maybeSingle();
+    if (!contact) return { ok: false as const, error: "Tradie not found." };
+
+    const { data: existing } = await db
+      .from("tradie_rate_cards")
+      .select("id")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .maybeSingle();
+
+    let rateCardId: string;
+    if (existing) {
+      await db
+        .from("tradie_rate_cards")
+        .update({
+          call_out_fee_cents: input.callOutFeeCents,
+          hourly_rate_cents: input.hourlyRateCents,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+      rateCardId = existing.id;
+      await db.from("tradie_rate_card_items").delete().eq("rate_card_id", rateCardId);
+    } else {
+      const { data: created, error } = await db
+        .from("tradie_rate_cards")
+        .insert({
+          org_id: contact.org_id,
+          tradie_contact_id: resolved.contact_id,
+          call_out_fee_cents: input.callOutFeeCents,
+          hourly_rate_cents: input.hourlyRateCents,
+        })
+        .select("id")
+        .single();
+      if (error) return { ok: false as const, error: `Could not save rate card: ${error.message}` };
+      rateCardId = created.id;
+    }
+
+    if (input.items.length > 0) {
+      const { error } = await db.from("tradie_rate_card_items").insert(
+        input.items.map((i) => ({
+          org_id: contact.org_id,
+          rate_card_id: rateCardId,
+          category: i.category,
+          flat_price_cents: i.flatPriceCents,
+          typical_minutes: i.typicalMinutes,
+        })),
+      );
+      if (error) return { ok: false as const, error: `Could not save rate card items: ${error.message}` };
+    }
+
+    return { ok: true as const };
+  },
+
+  async getPmPortfolioContext(token: string): Promise<PmPortfolioContext | null> {
+    const resolved = await resolveToken(token, "pm_portfolio");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const { data: contact } = await db
+      .from("contacts")
+      .select("full_name")
+      .eq("id", resolved.contact_id)
+      .maybeSingle();
+    if (!contact) return null;
+
+    const { data: managedProperties } = await db
+      .from("properties")
+      .select("id")
+      .eq("pm_contact_id", resolved.contact_id);
+    const ids = (managedProperties ?? []).map((p) => p.id as string);
+
+    const properties = (
+      await Promise.all(ids.map((id) => this.getProperty(id)))
+    ).filter((p): p is PropertyDetail => p !== null);
+
+    return { pmName: contact.full_name as string, properties };
+  },
+
+  async getTradieLeadIntakeInfo(token: string) {
+    const resolved = await resolveToken(token, "tradie_lead_intake");
+    if (!resolved?.aggregate_id) return null;
+    const db = serviceClient();
+    const { data: tradie } = await db
+      .from("contacts")
+      .select("full_name")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!tradie) return null;
+    return { tradieBusinessName: tradie.full_name as string };
+  },
+
+  async startTradieLeadConversation(
+    token: string,
+    existingConversationId?: string,
+  ): Promise<TradieLeadConversationContext | null> {
+    const resolved = await resolveToken(token, "tradie_lead_intake");
+    if (!resolved?.aggregate_id) return null;
+    const db = serviceClient();
+    const { data: tradie } = await db
+      .from("contacts")
+      .select("full_name, org_id")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!tradie) return null;
+
+    if (existingConversationId) {
+      const { data: convo } = await db
+        .from("sally_conversations")
+        .select("id, contact_id, tradie_contact_id")
+        .eq("id", existingConversationId)
+        .eq("tradie_contact_id", resolved.aggregate_id)
+        .maybeSingle();
+      if (convo) {
+        return {
+          conversationId: convo.id,
+          contactId: convo.contact_id,
+          tradieContactId: resolved.aggregate_id,
+          tradieBusinessName: tradie.full_name as string,
+        };
+      }
+      // Not found or mismatched — fall through and start a fresh one rather than erroring.
+    }
+
+    const { data: customer, error: custError } = await db
+      .from("contacts")
+      .insert({ org_id: tradie.org_id, kind: "customer", full_name: "New enquiry" })
+      .select("id")
+      .single();
+    if (custError) throw new Error(`startTradieLeadConversation: ${custError.message}`);
+
+    const { data: convo, error } = await db
+      .from("sally_conversations")
+      .insert({ org_id: tradie.org_id, contact_id: customer.id, tradie_contact_id: resolved.aggregate_id })
+      .select("id")
+      .single();
+    if (error) throw new Error(`startTradieLeadConversation: ${error.message}`);
+
+    return {
+      conversationId: convo.id,
+      contactId: customer.id,
+      tradieContactId: resolved.aggregate_id,
+      tradieBusinessName: tradie.full_name as string,
+    };
+  },
+
+  async completeTradieLead(conversationId: string, extraction: TradieLeadExtractionInput) {
+    const db = serviceClient();
+    const { data: convo } = await db
+      .from("sally_conversations")
+      .select("id, org_id, contact_id, tradie_contact_id, status")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (!convo || !convo.tradie_contact_id) return { ok: false as const, error: "Conversation not found." };
+    if (convo.status === "completed") return { ok: false as const, error: "This lead has already been logged." };
+
+    if (extraction.customerName) {
+      await db.from("contacts").update({ full_name: extraction.customerName }).eq("id", convo.contact_id);
+    }
+
+    let suggestedQuoteCents: number | null = null;
+    let suggestedCallOutFeeCents: number | null = null;
+    const { data: rateCard } = await db
+      .from("tradie_rate_cards")
+      .select("id, call_out_fee_cents, hourly_rate_cents")
+      .eq("tradie_contact_id", convo.tradie_contact_id)
+      .maybeSingle();
+    if (rateCard) {
+      suggestedCallOutFeeCents = rateCard.call_out_fee_cents;
+      const { data: item } = await db
+        .from("tradie_rate_card_items")
+        .select("flat_price_cents, typical_minutes")
+        .eq("rate_card_id", rateCard.id)
+        .eq("category", extraction.category)
+        .maybeSingle();
+      if (item?.flat_price_cents != null) {
+        suggestedQuoteCents = item.flat_price_cents;
+      } else if (item?.typical_minutes != null) {
+        suggestedQuoteCents = Math.round((rateCard.hourly_rate_cents * item.typical_minutes) / 60);
+      }
+    }
+
+    const { data: lead, error } = await db
+      .from("tradie_leads")
+      .insert({
+        org_id: convo.org_id,
+        tradie_contact_id: convo.tradie_contact_id,
+        customer_contact_id: convo.contact_id,
+        title: extraction.title,
+        description: extraction.description,
+        category: extraction.category,
+        suggested_quote_cents: suggestedQuoteCents,
+        suggested_call_out_fee_cents: suggestedCallOutFeeCents,
+      })
+      .select("id")
+      .single();
+    if (error) return { ok: false as const, error: `Could not save lead: ${error.message}` };
+
+    await db
+      .from("sally_conversations")
+      .update({ status: "completed", ended_at: new Date().toISOString(), tradie_lead_id: lead.id })
+      .eq("id", conversationId);
+
+    return { ok: true as const, leadId: lead.id };
+  },
+
+  async listTradieLeads(tradiePortalToken: string): Promise<TradieLeadSummary[]> {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return [];
+    const db = serviceClient();
+    const { data, error } = await db
+      .from("tradie_leads")
+      .select(
+        "id, title, description, category, status, suggested_quote_cents, suggested_call_out_fee_cents, created_at, contacts!tradie_leads_customer_contact_id_fkey(full_name)",
+      )
+      .eq("tradie_contact_id", resolved.contact_id)
+      .order("created_at", { ascending: false });
+    if (error) throw new Error(`listTradieLeads: ${error.message}`);
+
+    return ((data ?? []) as Array<{
+      id: string;
+      title: string;
+      description: string;
+      category: string;
+      status: string;
+      suggested_quote_cents: number | null;
+      suggested_call_out_fee_cents: number | null;
+      created_at: string;
+      contacts: { full_name: string } | { full_name: string }[] | null;
+    }>).map((row) => {
+      const joined = Array.isArray(row.contacts) ? row.contacts[0] : row.contacts;
+      return {
+        leadId: row.id,
+        customerName: joined?.full_name ?? "Unknown",
+        title: row.title,
+        description: row.description,
+        category: row.category as RequestCategory,
+        status: row.status,
+        suggestedQuoteCents: row.suggested_quote_cents,
+        suggestedCallOutFeeCents: row.suggested_call_out_fee_cents,
+        createdAt: row.created_at,
+      };
+    });
+  },
 };
 
 interface ContactJoin {
@@ -802,6 +1185,8 @@ interface QuoteJoinRow {
   quote_cents: number | null;
   call_out_fee_cents: number | null;
   note?: string | null;
+  created_at?: string;
+  submitted_at?: string | null;
   contacts: ContactJoin | ContactJoin[] | null;
 }
 
@@ -812,6 +1197,10 @@ function normalizeContact(joined: ContactJoin | ContactJoin[] | null): ContactJo
 
 function toQuoteSummary(row: QuoteJoinRow): QuoteSummary {
   const contact = normalizeContact(row.contacts);
+  let respondedWithinMinutes: number | null = null;
+  if (row.created_at && row.submitted_at) {
+    respondedWithinMinutes = (new Date(row.submitted_at).getTime() - new Date(row.created_at).getTime()) / 60_000;
+  }
   return {
     quoteId: row.id,
     tradieContactId: row.tradie_contact_id,
@@ -821,6 +1210,7 @@ function toQuoteSummary(row: QuoteJoinRow): QuoteSummary {
     quoteCents: row.quote_cents,
     callOutFeeCents: row.call_out_fee_cents,
     note: row.note ?? null,
+    respondedWithinMinutes,
   };
 }
 

@@ -65,11 +65,23 @@ describe.skipIf(!url)("row-level security", () => {
               (org_id, contact_id, scope_level, chunk_type, content, embedding, source_conversation_id)
               values (${orgA}, ${tenantA!.id}, 'contact', 'fact', 'Prefers morning access',
                       ${zeroVector}::vector, ${convoA!.id})`;
+
+    // Rate card / availability fixtures — org A's tradie only.
+    const [rateCardA] = await sql`insert into tradie_rate_cards
+              (org_id, tradie_contact_id, call_out_fee_cents, hourly_rate_cents)
+              values (${orgA}, ${tradieA!.id}, 8000, 12000) returning id`;
+    await sql`insert into tradie_rate_card_items (org_id, rate_card_id, category, flat_price_cents)
+              values (${orgA}, ${rateCardA!.id}, 'plumbing_general', 18000)`;
+    await sql`insert into tradie_availability_windows
+              (org_id, tradie_contact_id, day_of_week, start_time, end_time)
+              values (${orgA}, ${tradieA!.id}, 1, '09:00', '17:00')`;
   });
 
   afterAll(async () => {
     if (!sql) return;
     await sql.unsafe(`
+      delete from tradie_availability_windows; delete from tradie_rate_card_items;
+      delete from tradie_rate_cards;
       delete from sally_memory_chunks; delete from sally_messages;
       delete from sally_conversations; delete from quotes;
       delete from maintenance_requests; delete from contacts;
@@ -138,6 +150,27 @@ describe.skipIf(!url)("row-level security", () => {
     expect(convos).toHaveLength(1);
     expect(chunks).toHaveLength(1);
     expect(chunks[0]!.content).toBe("Prefers morning access");
+  });
+
+  it("org B cannot see org A's rate card, rate card items, or availability", async () => {
+    const cards = await asUser(userB, (tx) => tx`select id from tradie_rate_cards`);
+    const items = await asUser(userB, (tx) => tx`select id from tradie_rate_card_items`);
+    const windows = await asUser(userB, (tx) => tx`select id from tradie_availability_windows`);
+    expect(cards).toHaveLength(0);
+    expect(items).toHaveLength(0);
+    expect(windows).toHaveLength(0);
+  });
+
+  it("org A sees its own rate card, rate card items, and availability", async () => {
+    const cards = await asUser(userA, (tx) => tx`select call_out_fee_cents from tradie_rate_cards`);
+    const items = await asUser(userA, (tx) => tx`select flat_price_cents from tradie_rate_card_items`);
+    const windows = await asUser(userA, (tx) => tx`select day_of_week from tradie_availability_windows`);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.call_out_fee_cents).toBe(8000);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.flat_price_cents).toBe(18000);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]!.day_of_week).toBe(1);
   });
 
   it("events are append-only even for privileged writers", async () => {

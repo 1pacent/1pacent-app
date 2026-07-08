@@ -11,6 +11,9 @@ export const TOKEN_SCOPES = [
   "request_status",
   "landlord_approval",
   "tradie_job",
+  "tradie_portal",
+  "pm_portfolio",
+  "tradie_lead_intake",
 ] as const;
 
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
@@ -21,6 +24,9 @@ export const TOKEN_TTL_HOURS: Record<TokenScope, number> = {
   request_status: 24 * 30,
   landlord_approval: 72, // approval links expire fast
   tradie_job: 24 * 14,
+  tradie_portal: 24 * 365, // a tradie's durable "login" link — rate card, own AI receptionist
+  pm_portfolio: 24 * 365, // a property manager's durable "informed, not gating" portfolio view
+  tradie_lead_intake: 24 * 365, // a tradie's own shareable "talk to my business" link, for their own customers
 };
 
 export interface IssuedToken {

@@ -68,16 +68,42 @@ try {
     values (${orgId}, 'tenant', 'Priya Nair', ${DEMO_EMAIL}) returning id`;
   await sql`insert into contacts (org_id, kind, full_name, email)
     values (${orgId}, 'owner', 'Mark McNamara', ${DEMO_EMAIL})`; // landlord
-  await sql`insert into contacts (org_id, kind, full_name, email)
-    values (${orgId}, 'owner', 'Jordan Blake (Property Manager)', ${DEMO_EMAIL})`;
+  const [pm] = await sql`insert into contacts (org_id, kind, full_name, email)
+    values (${orgId}, 'property_manager', 'Jordan Blake', ${DEMO_EMAIL}) returning id`;
+  // Richmond is PM-managed — informed of decisions there, not gating them (docs/PRODUCT_BRIEF_v3.md §5.3).
+  await sql`update properties set pm_contact_id = ${pm!.id}, pm_approval_required = false where id = ${richmond!.id}`;
+
   const tradieRows: Array<[string, string]> = [
     ["John Snow", "electrical"],
     ["Leo Baker", "plumbing"],
     ["Sarah Mannis", "general_maintenance"],
   ];
+  const tradieIds: string[] = [];
   for (const [name, trade] of tradieRows) {
-    await sql`insert into contacts (org_id, kind, full_name, email, trade_type)
-              values (${orgId}, 'tradie', ${name}, ${DEMO_EMAIL}, ${trade})`;
+    const [tradie] = await sql`insert into contacts (org_id, kind, full_name, email, trade_type)
+              values (${orgId}, 'tradie', ${name}, ${DEMO_EMAIL}, ${trade}) returning id`;
+    tradieIds.push(tradie!.id as string);
+  }
+  const [johnId, leoId, sarahId] = tradieIds as [string, string, string];
+
+  // Rate cards — auto-populate quote drafts, never AI-invented (docs/DEVELOPER_BRIEF_v3.md §4.2).
+  const rateCards: Array<[string, number, number, Array<[string, number, number]>]> = [
+    [johnId, 8_000, 12_000, [["electrical_general", 18_000, 90], ["dangerous_electrical_fault", 25_000, 60]]],
+    [leoId, 7_500, 11_000, [["plumbing_general", 16_000, 75]]],
+    [sarahId, 6_000, 9_500, [["garden_external", 20_000, 120]]],
+  ];
+  for (const [tradieId, calloutFee, hourly, items] of rateCards) {
+    const [card] = await sql`insert into tradie_rate_cards (org_id, tradie_contact_id, call_out_fee_cents, hourly_rate_cents)
+              values (${orgId}, ${tradieId}, ${calloutFee}, ${hourly}) returning id`;
+    for (const [category, flatPrice, minutes] of items) {
+      await sql`insert into tradie_rate_card_items (org_id, rate_card_id, category, flat_price_cents, typical_minutes)
+                values (${orgId}, ${card!.id}, ${category}, ${flatPrice}, ${minutes})`;
+    }
+    // Weekday 9-5 availability for every seeded tradie — feeds the availability/ETA score.
+    for (let day = 1; day <= 5; day++) {
+      await sql`insert into tradie_availability_windows (org_id, tradie_contact_id, day_of_week, start_time, end_time)
+                values (${orgId}, ${tradieId}, ${day}, '09:00', '17:00')`;
+    }
   }
 
   // A pending-approval request with a live approval link.
@@ -94,15 +120,29 @@ try {
 
   const intake = newToken();
   const approval = newToken();
+  const yearFromNow = new Date(Date.now() + 365 * 86_400_000);
   await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, contact_id, expires_at)
             values (${orgId}, ${intake.hash}, 'tenant_intake', ${fitzroy!.id}, ${tenant!.id}, ${new Date(Date.now() + 90 * 86_400_000)})`;
   await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, expires_at)
             values (${orgId}, ${approval.hash}, 'landlord_approval', ${req!.id}, ${new Date(Date.now() + 72 * 3_600_000)})`;
 
+  const johnPortal = newToken();
+  await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, contact_id, expires_at)
+            values (${orgId}, ${johnPortal.hash}, 'tradie_portal', ${johnId}, ${johnId}, ${yearFromNow})`;
+  const johnLeadIntake = newToken();
+  await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, expires_at)
+            values (${orgId}, ${johnLeadIntake.hash}, 'tradie_lead_intake', ${johnId}, ${yearFromNow})`;
+  const pmPortfolio = newToken();
+  await sql`insert into access_tokens (org_id, token_hash, scope, aggregate_id, contact_id, expires_at)
+            values (${orgId}, ${pmPortfolio.hash}, 'pm_portfolio', ${pm!.id}, ${pm!.id}, ${yearFromNow})`;
+
   console.log("Seeded demo org:", orgId);
-  console.log("Tenant intake link (chat with Sally): /r/" + intake.token);
-  console.log("Landlord approval link:               /a/" + approval.token);
-  console.log("3 tradie contacts + landlord + property manager seeded, all at", DEMO_EMAIL);
+  console.log("Tenant intake link (chat with Sally):        /r/" + intake.token);
+  console.log("Landlord approval link:                      /a/" + approval.token);
+  console.log("Property manager portfolio (informed, not gating): /pm/" + pmPortfolio.token);
+  console.log("John Snow's rate-card portal:                 /t/" + johnPortal.token);
+  console.log("John Snow's own lead-intake link (share with his customers): /l/" + johnLeadIntake.token);
+  console.log("3 tradie contacts (with rate cards + weekday availability) + landlord + property manager seeded, all at", DEMO_EMAIL);
   console.log("Tradie quote links are issued dynamically once a request reaches 'quoting' — check the property page.");
 } finally {
   await sql.end();

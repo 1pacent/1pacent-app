@@ -17,15 +17,22 @@ import type {
   AcceptQuoteResult,
   DataSource,
   DispatchQuotesResult,
+  PmPortfolioContext,
   PropertyDetail,
   PropertySummary,
   QuoteContext,
   QuoteInvite,
   QuoteSummary,
+  RateCard,
+  RateCardItem,
   SallyConversationContext,
   SallyExtractionInput,
   SallyMemoryChunkView,
   SallyMessageView,
+  TradieLeadConversationContext,
+  TradieLeadExtractionInput,
+  TradieLeadSummary,
+  TradiePortalContext,
 } from "./data-types";
 
 /**
@@ -45,6 +52,7 @@ export interface DemoProperty {
   profile: PropertyComplianceProfile;
   autoApproveCapCents: number;
   evidence: EvidenceRecord[];
+  pmContactId?: string;
 }
 
 export interface DemoRequestEventRow {
@@ -89,6 +97,7 @@ const properties: DemoProperty[] = [
     suburb: "Richmond VIC 3121",
     profile: { jurisdiction: "VIC", hasGas: false, hasPool: false },
     autoApproveCapCents: 30_000,
+    pmContactId: "contact-pm-jordan",
     evidence: [
       { requirementKey: "vic_smoke_alarm_check", completedAt: daysAgo(30) },
       { requirementKey: "vic_electrical_safety_check", completedAt: daysAgo(100) },
@@ -154,27 +163,31 @@ const requests: DemoRequest[] = [
   },
 ];
 
-/** Demo contacts: 3 seeded tradies + the demo tenant Sally talks to. */
+/** Demo contacts: 3 seeded tradies, the demo tenant Sally talks to, and a property manager. */
 interface DemoContact {
   id: string;
-  kind: "tenant" | "tradie" | "owner";
+  kind: "tenant" | "tradie" | "owner" | "property_manager" | "customer";
   fullName: string;
   email: string;
 }
 
 const contacts: DemoContact[] = [
   { id: "contact-tenant-1", kind: "tenant", fullName: "Priya Nair", email: "mac@1pacent.com" },
+  { id: "contact-pm-jordan", kind: "property_manager", fullName: "Jordan Blake", email: "mac@1pacent.com" },
   { id: "contact-tradie-john", kind: "tradie", fullName: "John Snow", email: "mac@1pacent.com" },
   { id: "contact-tradie-leo", kind: "tradie", fullName: "Leo Baker", email: "mac@1pacent.com" },
   { id: "contact-tradie-sarah", kind: "tradie", fullName: "Sarah Mannis", email: "mac@1pacent.com" },
 ];
+let demoContactSeq = 0;
 
 interface DemoSallyConversation {
   id: string;
   contactId: string;
-  propertyId: string;
+  propertyId?: string;
+  tradieContactId?: string;
   status: "active" | "completed" | "abandoned";
   requestId?: string;
+  tradieLeadId?: string;
 }
 const sallyConversations: DemoSallyConversation[] = [];
 
@@ -203,15 +216,66 @@ interface DemoQuote {
   quoteCents: number | null;
   callOutFeeCents: number | null;
   note: string | null;
+  createdAt: string;
+  submittedAt: string | null;
 }
 const quotes: DemoQuote[] = [];
 
+interface DemoRateCard {
+  tradieContactId: string;
+  callOutFeeCents: number;
+  hourlyRateCents: number;
+  items: Array<{ category: RequestCategory; flatPriceCents: number | null; typicalMinutes: number | null }>;
+}
+const rateCards: DemoRateCard[] = [
+  {
+    tradieContactId: "contact-tradie-john",
+    callOutFeeCents: 8_000,
+    hourlyRateCents: 12_000,
+    items: [{ category: "electrical_general", flatPriceCents: 18_000, typicalMinutes: 90 }],
+  },
+];
+
+interface DemoTradieLead {
+  id: string;
+  tradieContactId: string;
+  customerContactId: string;
+  title: string;
+  description: string;
+  category: RequestCategory;
+  status: "new" | "quoted" | "accepted" | "closed";
+  suggestedQuoteCents: number | null;
+  suggestedCallOutFeeCents: number | null;
+  createdAt: string;
+}
+const tradieLeads: DemoTradieLead[] = [];
+
 /** Demo stand-ins for hashed access_tokens rows. Tradie-job tokens are issued
  * dynamically by dispatchQuotesForRequest, so this map is mutable. */
-type DemoTokenScope = "tenant_intake" | "landlord_approval" | "tradie_job";
+type DemoTokenScope =
+  | "tenant_intake"
+  | "landlord_approval"
+  | "tradie_job"
+  | "tradie_portal"
+  | "pm_portfolio"
+  | "tradie_lead_intake";
 const demoTokens: Record<string, { scope: DemoTokenScope; aggregateId: string; contactId?: string }> = {
   "demo-intake": { scope: "tenant_intake", aggregateId: "prop-fitzroy", contactId: "contact-tenant-1" },
   "demo-approval": { scope: "landlord_approval", aggregateId: "req-fence" },
+  "demo-tradie-portal": {
+    scope: "tradie_portal",
+    aggregateId: "contact-tradie-john",
+    contactId: "contact-tradie-john",
+  },
+  "demo-pm-portfolio": {
+    scope: "pm_portfolio",
+    aggregateId: "contact-pm-jordan",
+    contactId: "contact-pm-jordan",
+  },
+  "demo-tradie-lead-intake": {
+    scope: "tradie_lead_intake",
+    aggregateId: "contact-tradie-john",
+  },
 };
 let demoTokenSeq = 0;
 function issueDemoToken(scope: DemoTokenScope, aggregateId: string, contactId?: string): string {
@@ -464,7 +528,7 @@ export const demoData: DataSource = {
     for (const c of chunks) {
       sallyMemoryChunks.push({
         contactId,
-        propertyId: c.scopeLevel === "property" ? propertyId : null,
+        propertyId: c.scopeLevel === "property" ? (propertyId ?? null) : null,
         scopeLevel: c.scopeLevel,
         chunkType: c.chunkType,
         content: c.content,
@@ -525,6 +589,8 @@ export const demoData: DataSource = {
         quoteCents: null,
         callOutFeeCents: null,
         note: null,
+        createdAt: new Date().toISOString(),
+        submittedAt: null,
       });
       const token = issueDemoToken("tradie_job", quoteId, tradie.id);
       return { quoteId, tradieContactId: tradie.id, tradieName: tradie.fullName, tradieEmail: tradie.email, token };
@@ -548,12 +614,28 @@ export const demoData: DataSource = {
     if (!request) return null;
     const property = properties.find((p) => p.id === request.propertyId);
     const tradie = contacts.find((c) => c.id === quote.tradieContactId);
+
+    let suggestedQuoteCents: number | undefined;
+    let suggestedCallOutFeeCents: number | undefined;
+    const rateCard = rateCards.find((c) => c.tradieContactId === quote.tradieContactId);
+    if (rateCard) {
+      suggestedCallOutFeeCents = rateCard.callOutFeeCents;
+      const item = rateCard.items.find((i) => i.category === request.category);
+      if (item?.flatPriceCents != null) {
+        suggestedQuoteCents = item.flatPriceCents;
+      } else if (item?.typicalMinutes != null) {
+        suggestedQuoteCents = Math.round((rateCard.hourlyRateCents * item.typicalMinutes) / 60);
+      }
+    }
+
     return {
       quoteId: quote.id,
       requestTitle: request.title,
       requestDescription: request.description,
       propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
       tradieName: tradie?.fullName ?? "there",
+      suggestedQuoteCents,
+      suggestedCallOutFeeCents,
     };
   },
 
@@ -580,6 +662,7 @@ export const demoData: DataSource = {
     quote.quoteCents = input.quoteCents;
     quote.callOutFeeCents = input.callOutFeeCents;
     quote.note = input.note ?? null;
+    quote.submittedAt = new Date().toISOString();
     return { ok: true as const };
   },
 
@@ -597,6 +680,9 @@ export const demoData: DataSource = {
           quoteCents: q.quoteCents,
           callOutFeeCents: q.callOutFeeCents,
           note: q.note,
+          respondedWithinMinutes: q.submittedAt
+            ? (new Date(q.submittedAt).getTime() - new Date(q.createdAt).getTime()) / 60_000
+            : null,
         };
       });
   },
@@ -640,6 +726,16 @@ export const demoData: DataSource = {
     };
   },
 
+  async getComparableJobs(): Promise<Array<{ finalInvoiceCents: number }>> {
+    // Demo store tracks no completed-job invoice history — honest cold-start
+    // behaviour, same as getTradieTrustSummaries below.
+    return [];
+  },
+
+  async getTypicalResponseMinutes(): Promise<number | null> {
+    return null;
+  },
+
   async getTradieTrustSummaries(tradieContactIds: string[]) {
     // Demo store seeds no completed job history — every tradie reads as
     // "unproven" until real work_orders with invoice_cents exist.
@@ -648,6 +744,163 @@ export const demoData: DataSource = {
       summaries[id] = { completedJobs: 0, avgAbsVariancePct: null };
     }
     return summaries;
+  },
+
+  async getTradiePortalContext(token: string): Promise<TradiePortalContext | null> {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
+    const tradie = contacts.find((c) => c.id === resolved.contactId);
+    if (!tradie) return null;
+    const card = rateCards.find((c) => c.tradieContactId === resolved.contactId);
+    const rateCard: RateCard | null = card
+      ? { callOutFeeCents: card.callOutFeeCents, hourlyRateCents: card.hourlyRateCents, items: card.items }
+      : null;
+    return { tradieContactId: tradie.id, tradieName: tradie.fullName, rateCard };
+  },
+
+  async saveRateCard(
+    token: string,
+    input: { callOutFeeCents: number; hourlyRateCents: number; items: RateCardItem[] },
+  ) {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link is invalid or has expired." };
+    }
+    const existing = rateCards.find((c) => c.tradieContactId === resolved.contactId);
+    if (existing) {
+      existing.callOutFeeCents = input.callOutFeeCents;
+      existing.hourlyRateCents = input.hourlyRateCents;
+      existing.items = input.items;
+    } else {
+      rateCards.push({
+        tradieContactId: resolved.contactId,
+        callOutFeeCents: input.callOutFeeCents,
+        hourlyRateCents: input.hourlyRateCents,
+        items: input.items,
+      });
+    }
+    return { ok: true as const };
+  },
+
+  async getPmPortfolioContext(token: string): Promise<PmPortfolioContext | null> {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return null;
+    const pm = contacts.find((c) => c.id === resolved.contactId);
+    if (!pm) return null;
+    const managedIds = properties.filter((p) => p.pmContactId === resolved.contactId).map((p) => p.id);
+    const propertyDetails = (
+      await Promise.all(managedIds.map((id) => this.getProperty(id)))
+    ).filter((p): p is PropertyDetail => p !== null);
+    return { pmName: pm.fullName, properties: propertyDetails };
+  },
+
+  async getTradieLeadIntakeInfo(token: string) {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_lead_intake") return null;
+    const tradie = contacts.find((c) => c.id === resolved.aggregateId);
+    if (!tradie) return null;
+    return { tradieBusinessName: tradie.fullName };
+  },
+
+  async startTradieLeadConversation(
+    token: string,
+    existingConversationId?: string,
+  ): Promise<TradieLeadConversationContext | null> {
+    const resolved = demoTokens[token];
+    if (resolved?.scope !== "tradie_lead_intake") return null;
+    const tradie = contacts.find((c) => c.id === resolved.aggregateId);
+    if (!tradie) return null;
+
+    if (existingConversationId) {
+      const convo = sallyConversations.find(
+        (c) => c.id === existingConversationId && c.tradieContactId === tradie.id,
+      );
+      if (convo) {
+        return {
+          conversationId: convo.id,
+          contactId: convo.contactId,
+          tradieContactId: tradie.id,
+          tradieBusinessName: tradie.fullName,
+        };
+      }
+    }
+
+    const customerId = `contact-customer-${++demoContactSeq}`;
+    contacts.push({ id: customerId, kind: "customer", fullName: "New enquiry", email: "" });
+    const conversationId = `convo-${Math.random().toString(36).slice(2, 8)}`;
+    sallyConversations.push({
+      id: conversationId,
+      contactId: customerId,
+      tradieContactId: tradie.id,
+      status: "active",
+    });
+    return { conversationId, contactId: customerId, tradieContactId: tradie.id, tradieBusinessName: tradie.fullName };
+  },
+
+  async completeTradieLead(conversationId: string, extraction: TradieLeadExtractionInput) {
+    const convo = sallyConversations.find((c) => c.id === conversationId);
+    if (!convo || !convo.tradieContactId) return { ok: false as const, error: "Conversation not found." };
+    if (convo.status === "completed") {
+      return { ok: false as const, error: "This lead has already been logged." };
+    }
+
+    if (extraction.customerName) {
+      const customer = contacts.find((c) => c.id === convo.contactId);
+      if (customer) customer.fullName = extraction.customerName;
+    }
+
+    let suggestedQuoteCents: number | null = null;
+    let suggestedCallOutFeeCents: number | null = null;
+    const rateCard = rateCards.find((c) => c.tradieContactId === convo.tradieContactId);
+    if (rateCard) {
+      suggestedCallOutFeeCents = rateCard.callOutFeeCents;
+      const item = rateCard.items.find((i) => i.category === extraction.category);
+      if (item?.flatPriceCents != null) {
+        suggestedQuoteCents = item.flatPriceCents;
+      } else if (item?.typicalMinutes != null) {
+        suggestedQuoteCents = Math.round((rateCard.hourlyRateCents * item.typicalMinutes) / 60);
+      }
+    }
+
+    const leadId = `lead-${Math.random().toString(36).slice(2, 8)}`;
+    tradieLeads.push({
+      id: leadId,
+      tradieContactId: convo.tradieContactId,
+      customerContactId: convo.contactId,
+      title: extraction.title,
+      description: extraction.description,
+      category: extraction.category,
+      status: "new",
+      suggestedQuoteCents,
+      suggestedCallOutFeeCents,
+      createdAt: new Date().toISOString(),
+    });
+    convo.status = "completed";
+    convo.tradieLeadId = leadId;
+
+    return { ok: true as const, leadId };
+  },
+
+  async listTradieLeads(tradiePortalToken: string): Promise<TradieLeadSummary[]> {
+    const resolved = demoTokens[tradiePortalToken];
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return [];
+    return tradieLeads
+      .filter((l) => l.tradieContactId === resolved.contactId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map((l) => {
+        const customer = contacts.find((c) => c.id === l.customerContactId);
+        return {
+          leadId: l.id,
+          customerName: customer?.fullName ?? "Unknown",
+          title: l.title,
+          description: l.description,
+          category: l.category,
+          status: l.status,
+          suggestedQuoteCents: l.suggestedQuoteCents,
+          suggestedCallOutFeeCents: l.suggestedCallOutFeeCents,
+          createdAt: l.createdAt,
+        };
+      });
   },
 };
 

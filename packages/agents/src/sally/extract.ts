@@ -12,10 +12,12 @@ export const sallyExtractionSchema = z.object({
   title: z.string().min(1).max(120),
   description: z.string().min(1).max(2000),
   category: z.enum(REQUEST_CATEGORIES),
+  /** True once `category` is confident enough to drive a real price-band lookup — distinct
+   * from `confidence` below, which covers the whole extraction (title/description quality too). */
+  categoryConfident: z.boolean(),
   tenantStatedUrgency: z.enum(["emergency", "soon", "flexible"]),
-  callOutFeeEstimateCents: z
-    .object({ low: z.number().int().nonnegative(), high: z.number().int().nonnegative() })
-    .nullable(),
+  /** Only meaningful in tradie_lead_capture mode — the caller's name, if they've given it. Null otherwise. */
+  customerName: z.string().min(1).max(120).nullable(),
   readyToDispatch: z.boolean(),
   confidence: z.number().min(0).max(1),
 });
@@ -39,8 +41,9 @@ const EXTRACTION_JSON_SCHEMA = {
     "title",
     "description",
     "category",
+    "categoryConfident",
     "tenantStatedUrgency",
-    "callOutFeeEstimateCents",
+    "customerName",
     "readyToDispatch",
     "confidence",
   ],
@@ -48,24 +51,23 @@ const EXTRACTION_JSON_SCHEMA = {
     title: { type: "string" },
     description: { type: "string" },
     category: { type: "string", enum: [...REQUEST_CATEGORIES] },
+    categoryConfident: { type: "boolean" },
     tenantStatedUrgency: { type: "string", enum: ["emergency", "soon", "flexible"] },
-    callOutFeeEstimateCents: {
-      type: ["object", "null"],
-      additionalProperties: false,
-      required: ["low", "high"],
-      properties: { low: { type: "integer" }, high: { type: "integer" } },
-    },
+    customerName: { type: ["string", "null"] },
     readyToDispatch: { type: "boolean" },
     confidence: { type: "number" },
   },
 } as const;
 
 const EXTRACTION_INSTRUCTIONS =
-  "Given the conversation so far between Sally (intake assistant) and a tenant, extract the job " +
-  "details as JSON matching the schema exactly. Set readyToDispatch=true only once title, " +
-  "description, category, and urgency are all known with reasonable confidence. Set " +
-  "callOutFeeEstimateCents to null if you haven't proposed a rough range yet. Output ONLY the " +
-  "JSON object, no prose, no markdown fences.";
+  "Given the conversation so far between Sally (an intake assistant) and a caller, extract the job " +
+  "details as JSON matching the schema exactly. Always fill in your best-guess title/description/category " +
+  "even early in the conversation, but set categoryConfident=true only once the category is clear " +
+  "from what the caller actually said (not a guess from a single vague message) — this gates whether " +
+  "a real price-band lookup runs, so a wrong-but-confident guess would show a misleading price. " +
+  "Set customerName to the caller's name if they've given it, otherwise null. " +
+  "Set readyToDispatch=true only once title, description, category, and urgency are all known with " +
+  "reasonable confidence. Output ONLY the JSON object, no prose, no markdown fences.";
 
 export interface ExtractSallyProposalParams {
   client: OpenRouterClient;

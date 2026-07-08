@@ -95,6 +95,35 @@ export interface SallyExtractionInput {
   aiMeta: { model: string; promptVersion: string; confidence: number };
 }
 
+/** Tradie's own AI receptionist — a lead for THEIR business, not a property maintenance request. */
+
+export interface TradieLeadConversationContext {
+  conversationId: string;
+  contactId: string;
+  tradieContactId: string;
+  tradieBusinessName: string;
+}
+
+export interface TradieLeadExtractionInput {
+  title: string;
+  description: string;
+  category: RequestCategory;
+  customerName: string | null;
+  aiMeta: { model: string; promptVersion: string; confidence: number };
+}
+
+export interface TradieLeadSummary {
+  leadId: string;
+  customerName: string;
+  title: string;
+  description: string;
+  category: RequestCategory;
+  status: string;
+  suggestedQuoteCents: number | null;
+  suggestedCallOutFeeCents: number | null;
+  createdAt: string;
+}
+
 /** 3-tradie quote marketplace */
 
 export interface QuoteInvite {
@@ -120,6 +149,35 @@ export interface QuoteContext {
   requestDescription: string;
   propertyAddress: string;
   tradieName: string;
+  /** Pre-filled from the tradie's own rate card — never AI-invented. Absent if no rate card is configured. */
+  suggestedQuoteCents?: number;
+  suggestedCallOutFeeCents?: number;
+}
+
+/** Tradie rate card — drives quote auto-population, never AI-set. */
+
+export interface RateCardItem {
+  category: RequestCategory;
+  flatPriceCents: number | null;
+  typicalMinutes: number | null;
+}
+
+export interface RateCard {
+  callOutFeeCents: number;
+  hourlyRateCents: number;
+  items: RateCardItem[];
+}
+
+export interface TradiePortalContext {
+  tradieContactId: string;
+  tradieName: string;
+  rateCard: RateCard | null;
+}
+
+/** Property manager — informed of decisions across their managed properties, not gating by default. */
+export interface PmPortfolioContext {
+  pmName: string;
+  properties: PropertyDetail[];
 }
 
 export interface QuoteSummary {
@@ -131,6 +189,8 @@ export interface QuoteSummary {
   quoteCents: number | null;
   callOutFeeCents: number | null;
   note: string | null;
+  /** Minutes from invite to quote submission — feeds the availability score. Null until submitted. */
+  respondedWithinMinutes: number | null;
 }
 
 export interface AcceptQuoteResult {
@@ -157,7 +217,8 @@ export interface DataSource {
   writeSallyMemory(params: {
     conversationId: string;
     contactId: string;
-    propertyId: string;
+    /** Absent for a tradie's own lead-capture conversation, which has no property. */
+    propertyId?: string;
     chunks: SallyMemoryChunkInput[];
   }): Promise<void>;
   completeSallyConversation(conversationId: string, extraction: SallyExtractionInput): Promise<IntakeOutcome>;
@@ -176,4 +237,33 @@ export interface DataSource {
   getTradieTrustSummaries(
     tradieContactIds: string[],
   ): Promise<Record<string, { completedJobs: number; avgAbsVariancePct: number | null }>>;
+
+  /** Comparable completed jobs for the pricing engine — org-scoped via the property. */
+  getComparableJobs(propertyId: string, category: RequestCategory): Promise<Array<{ finalInvoiceCents: number }>>;
+
+  /** Historical invite-to-quote response times for this category/urgency — feeds Sally's stated ETA band. */
+  getTypicalResponseMinutes(propertyId: string, category: RequestCategory): Promise<number | null>;
+
+  // Tradie portal (rate card)
+  getTradiePortalContext(token: string): Promise<TradiePortalContext | null>;
+  saveRateCard(
+    token: string,
+    input: { callOutFeeCents: number; hourlyRateCents: number; items: RateCardItem[] },
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  // Property manager — informed portfolio view
+  getPmPortfolioContext(token: string): Promise<PmPortfolioContext | null>;
+
+  // Tradie's own AI receptionist (leads for their own business)
+  /** Read-only preview — does NOT create a conversation (unlike startTradieLeadConversation, which does). */
+  getTradieLeadIntakeInfo(token: string): Promise<{ tradieBusinessName: string } | null>;
+  startTradieLeadConversation(
+    token: string,
+    existingConversationId?: string,
+  ): Promise<TradieLeadConversationContext | null>;
+  completeTradieLead(
+    conversationId: string,
+    extraction: TradieLeadExtractionInput,
+  ): Promise<{ ok: true; leadId: string } | { ok: false; error: string }>;
+  listTradieLeads(tradiePortalToken: string): Promise<TradieLeadSummary[]>;
 }

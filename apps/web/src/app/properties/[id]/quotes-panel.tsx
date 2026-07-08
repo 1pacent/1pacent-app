@@ -16,6 +16,8 @@ export interface QuotesPanelQuote {
   calloutDisplay: string | null;
   note: string | null;
   trustTier: "unproven" | "reliable" | "needs_review";
+  /** 1-based rank from the trust/cost/availability composite score — only set once submitted+priced. */
+  rank?: number;
 }
 
 const TRUST_LABEL: Record<QuotesPanelQuote["trustTier"], string> = {
@@ -64,6 +66,16 @@ export function QuotesPanel({ requestId, quotes }: { requestId: string; quotes: 
           >
             <div>
               <div className="flex items-center gap-2">
+                {q.rank === 1 && (
+                  <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-xs font-semibold text-white">
+                    Top pick
+                  </span>
+                )}
+                {q.rank !== undefined && q.rank !== 1 && (
+                  <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600">
+                    #{q.rank}
+                  </span>
+                )}
                 <span className="font-medium text-slate-900">{q.tradieName}</span>
                 <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${TRUST_CLASS[q.trustTier]}`}>
                   {TRUST_LABEL[q.trustTier]}

@@ -14,7 +14,7 @@ describe("runSallyTurn", () => {
     const result = await runSallyTurn({
       client,
       model: "m",
-      context: { propertyAddress: "1 Test St" },
+      context: { operating: { mode: "tenant_intake", propertyAddress: "1 Test St" } },
       history: [{ role: "user", content: "hi" }],
       userMessage: "my tap is leaking",
     });
@@ -38,12 +38,35 @@ describe("runSallyTurn", () => {
     await runSallyTurn({
       client,
       model: "m",
-      context: { propertyAddress: "1 Test St", memoryContext: "Prefers morning access" },
+      context: {
+        operating: { mode: "tenant_intake", propertyAddress: "1 Test St" },
+        memoryContext: "Prefers morning access",
+      },
       history: [],
       userMessage: "hello",
     });
 
     const messages = capturedBody!.messages as Array<{ role: string; content: string }>;
     expect(messages[0]!.content).toContain("Prefers morning access");
+  });
+
+  it("uses tradie-lead-capture framing when operating in that mode", async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(init.body as string);
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+    }) as unknown as typeof fetch;
+    const client = new OpenRouterClient({ apiKey: "k", fetchImpl });
+
+    await runSallyTurn({
+      client,
+      model: "m",
+      context: { operating: { mode: "tradie_lead_capture", tradieBusinessName: "Snow Electrical" } },
+      history: [],
+      userMessage: "hi, my power point is sparking",
+    });
+
+    const messages = capturedBody!.messages as Array<{ role: string; content: string }>;
+    expect(messages[0]!.content).toContain("Snow Electrical");
   });
 });

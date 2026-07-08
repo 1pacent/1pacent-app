@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyTrust, computeQuoteAccuracy } from "../src/trust/scoring.js";
+import { classifyTrust, computeQuoteAccuracy, scoreTrust } from "../src/trust/scoring.js";
 
 describe("computeQuoteAccuracy", () => {
   it("computes zero variance when the quote matched the invoice exactly", () => {
@@ -46,5 +46,20 @@ describe("classifyTrust", () => {
 
   it("boundary: exactly at the review threshold is still reliable", () => {
     expect(classifyTrust({ completedJobs: 5, avgAbsVariancePct: 25 })).toBe("reliable");
+  });
+});
+
+describe("scoreTrust", () => {
+  it("gives an unproven tradie a neutral score", () => {
+    expect(scoreTrust({ completedJobs: 1, avgAbsVariancePct: 5 })).toBe(50);
+    expect(scoreTrust({ completedJobs: 10, avgAbsVariancePct: null })).toBe(50);
+  });
+
+  it("scores a proven, accurate tradie highly", () => {
+    expect(scoreTrust({ completedJobs: 5, avgAbsVariancePct: 5 })).toBe(95);
+  });
+
+  it("scores a proven, inaccurate tradie lowly, clamped at 0", () => {
+    expect(scoreTrust({ completedJobs: 5, avgAbsVariancePct: 150 })).toBe(0);
   });
 });

@@ -3,7 +3,12 @@
 import { useState, useTransition } from "react";
 import { submitQuote, type SubmitQuoteResult } from "./actions";
 
-export function QuoteForm({ token }: { token: string }) {
+export interface QuoteFormSuggestion {
+  quoteDollars?: string;
+  callOutFeeDollars?: string;
+}
+
+export function QuoteForm({ token, suggestion }: { token: string; suggestion?: QuoteFormSuggestion }) {
   const [result, setResult] = useState<SubmitQuoteResult | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -27,6 +32,13 @@ export function QuoteForm({ token }: { token: string }) {
         <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{result.error}</p>
       )}
 
+      {(suggestion?.quoteDollars || suggestion?.callOutFeeDollars) && (
+        <p className="rounded-lg bg-slate-50 px-4 py-3 text-xs text-slate-600">
+          Pre-filled from your rate card — check the numbers and adjust for this specific job before
+          sending.
+        </p>
+      )}
+
       <div>
         <label htmlFor="quote" className="block text-sm font-medium text-slate-700">
           Your quote (excl. call-out fee)
@@ -35,6 +47,7 @@ export function QuoteForm({ token }: { token: string }) {
           id="quote"
           name="quote"
           required
+          defaultValue={suggestion?.quoteDollars}
           placeholder="e.g. 180.00"
           inputMode="decimal"
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm"
@@ -48,6 +61,7 @@ export function QuoteForm({ token }: { token: string }) {
         <input
           id="calloutFee"
           name="calloutFee"
+          defaultValue={suggestion?.callOutFeeDollars}
           placeholder="e.g. 80.00"
           inputMode="decimal"
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm"

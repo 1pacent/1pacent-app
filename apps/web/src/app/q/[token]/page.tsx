@@ -28,7 +28,14 @@ export default async function QuotePage({ params }: { params: Promise<{ token: s
         <p className="text-sm text-slate-600">{context.requestDescription}</p>
       </div>
 
-      <QuoteForm token={token} />
+      <QuoteForm
+        token={token}
+        suggestion={{
+          quoteDollars: context.suggestedQuoteCents != null ? (context.suggestedQuoteCents / 100).toFixed(2) : undefined,
+          callOutFeeDollars:
+            context.suggestedCallOutFeeCents != null ? (context.suggestedCallOutFeeCents / 100).toFixed(2) : undefined,
+        }}
+      />
     </div>
   );
 }

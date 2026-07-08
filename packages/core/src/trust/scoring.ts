@@ -45,3 +45,17 @@ export function classifyTrust(input: TrustScoreInput): TrustTier {
   }
   return input.avgAbsVariancePct > NEEDS_REVIEW_THRESHOLD_PCT ? "needs_review" : "reliable";
 }
+
+/**
+ * Continuous 0-100 trust score for the quote-ranking formula
+ * (packages/core/src/quotes/ranking.ts) — classifyTrust's tier is for
+ * display; this is for math. An unproven tradie (below the minimum job
+ * count, or no history) gets a neutral 50 — neither rewarded nor
+ * penalised for being new, since "new" isn't the same as "untrustworthy".
+ */
+export function scoreTrust(input: TrustScoreInput): number {
+  if (input.completedJobs < MIN_JOBS_FOR_TRUST || input.avgAbsVariancePct === null) {
+    return 50;
+  }
+  return Math.max(0, Math.min(100, 100 - input.avgAbsVariancePct));
+}

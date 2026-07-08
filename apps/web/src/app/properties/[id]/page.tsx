@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { classifyTrust, formatCents } from "@1pacent/core";
+import { classifyTrust, formatCents, rankQuotes, scoreAvailability, scoreTrust } from "@1pacent/core";
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
 import { QuotesPanel, type QuotesPanelQuote } from "./quotes-panel";
@@ -27,21 +27,48 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
     const allTradieIds = [...new Set(quotesPerRequest.flat().map((q) => q.tradieContactId))];
     const trust = await data.getTradieTrustSummaries(allTradieIds);
     quotingRequests.forEach((r, i) => {
+      const requestQuotes = quotesPerRequest[i]!;
+      const rankable = requestQuotes
+        .filter((q) => q.status === "submitted" && q.quoteCents !== null && q.callOutFeeCents !== null)
+        .map((q) => ({
+          quoteId: q.quoteId,
+          totalCents: q.quoteCents! + q.callOutFeeCents!,
+          trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+          availabilityScore: scoreAvailability({
+            tradieRespondedWithinMinutes: q.respondedWithinMinutes,
+            matchesTenantPreferredWindow: false,
+            currentOpenJobCount: 0,
+          }),
+        }));
+      const ranked = rankQuotes(rankable);
+      const rankById = new Map(ranked.map((r2) => [r2.quoteId, r2]));
+
+      // Ranked (submitted, priced) quotes first in score order, then anything still awaiting a response.
+      const ordered = [...requestQuotes].sort((a, b) => {
+        const rankA = rankById.get(a.quoteId)?.rank ?? Number.MAX_SAFE_INTEGER;
+        const rankB = rankById.get(b.quoteId)?.rank ?? Number.MAX_SAFE_INTEGER;
+        return rankA - rankB;
+      });
+
       quotesByRequest.set(
         r.id,
-        quotesPerRequest[i]!.map((q) => ({
-          quoteId: q.quoteId,
-          tradieName: q.tradieName,
-          status: q.status,
-          note: q.note,
-          quoteDisplay: q.quoteCents !== null ? formatCents(q.quoteCents) : null,
-          calloutDisplay: q.callOutFeeCents !== null ? formatCents(q.callOutFeeCents) : null,
-          totalDisplay:
-            q.quoteCents !== null && q.callOutFeeCents !== null
-              ? formatCents(q.quoteCents + q.callOutFeeCents)
-              : null,
-          trustTier: classifyTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
-        })),
+        ordered.map((q) => {
+          const rankedEntry = rankById.get(q.quoteId);
+          return {
+            quoteId: q.quoteId,
+            tradieName: q.tradieName,
+            status: q.status,
+            note: q.note,
+            quoteDisplay: q.quoteCents !== null ? formatCents(q.quoteCents) : null,
+            calloutDisplay: q.callOutFeeCents !== null ? formatCents(q.callOutFeeCents) : null,
+            totalDisplay:
+              q.quoteCents !== null && q.callOutFeeCents !== null
+                ? formatCents(q.quoteCents + q.callOutFeeCents)
+                : null,
+            trustTier: classifyTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+            rank: rankedEntry?.rank,
+          };
+        }),
       );
     });
   }
