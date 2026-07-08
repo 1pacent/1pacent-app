@@ -10,7 +10,7 @@ export function ApprovalPanel({ requestId }: { requestId: string }) {
 
   if (decided) {
     return (
-      <p className="mt-2 text-sm font-medium text-emerald-700">
+      <p className="mt-2 text-sm font-medium text-brand-700">
         {decided === "approve" ? "Approved — dispatching to tradies…" : "Declined ✓"}
       </p>
     );
@@ -36,7 +36,7 @@ export function ApprovalPanel({ requestId }: { requestId: string }) {
           type="button"
           onClick={() => decide("approve")}
           disabled={pending}
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
         >
           Approve
         </button>

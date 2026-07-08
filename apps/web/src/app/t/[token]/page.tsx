@@ -36,8 +36,8 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
 
   return (
     <div className="mx-auto max-w-xl">
-      <p className="text-sm font-medium text-emerald-700">Your business</p>
-      <h1 className="mt-1 text-2xl font-bold text-slate-900">Hi {context.tradieName}</h1>
+      <p className="text-sm font-medium text-brand-700">Your business</p>
+      <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">Hi {context.tradieName}</h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
         Sally answers your missed calls in your business&apos;s name, using your own rate card below — for
         1Pacent jobs and for your own customers, from your own lead-intake link.
@@ -66,7 +66,7 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
                 </div>
                 <p className="mt-1 text-xs text-slate-500">{lead.description}</p>
                 {lead.suggestedQuoteCents !== null && (
-                  <p className="mt-1 text-xs text-emerald-700">
+                  <p className="mt-1 text-xs text-brand-700">
                     Suggested from your rate card: {formatCents(lead.suggestedQuoteCents)}
                     {lead.suggestedCallOutFeeCents !== null ? ` + ${formatCents(lead.suggestedCallOutFeeCents)} call-out` : ""}
                   </p>

@@ -14,9 +14,9 @@ export function QuoteForm({ token, suggestion }: { token: string; suggestion?: Q
 
   if (result?.ok) {
     return (
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center">
-        <p className="text-lg font-semibold text-emerald-900">Quote sent ✓</p>
-        <p className="mt-2 text-sm text-emerald-800">
+      <div className="rounded-xl border border-brand-200 bg-brand-50 p-6 text-center">
+        <p className="text-lg font-semibold text-brand-900">Quote sent ✓</p>
+        <p className="mt-2 text-sm text-brand-800">
           The landlord will review all quotes and let you know if you've been selected.
         </p>
       </div>
@@ -84,7 +84,7 @@ export function QuoteForm({ token, suggestion }: { token: string; suggestion?: Q
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+        className="w-full rounded-lg bg-brand-600 px-4 py-3 font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
       >
         {pending ? "Sending…" : "Send quote"}
       </button>

@@ -91,7 +91,7 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
         ← Portfolio
       </Link>
       <div className="mt-2 flex items-baseline justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">
+        <h1 className="font-serif text-2xl font-semibold text-slate-900">
           {property.address}, {property.suburb}
         </h1>
         <TrafficLightBadge status={property.compliance.overall} />
@@ -175,7 +175,7 @@ export default async function PropertyPage({ params }: { params: Promise<{ id: s
                 <div className="flex items-center gap-2">
                   <p className="font-medium text-slate-900">{r.title}</p>
                   {r.isWarrantyClaim && (
-                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                    <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">
                       Warranty claim
                     </span>
                   )}

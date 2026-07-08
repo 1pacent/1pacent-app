@@ -75,7 +75,7 @@ export function SallyChat({ token }: { token: string }) {
           <div key={i} className={`flex ${m.role === "tenant" ? "justify-end" : "justify-start"}`}>
             <div
               className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm ${
-                m.role === "tenant" ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-900"
+                m.role === "tenant" ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-900"
               }`}
             >
               {m.content}
@@ -94,9 +94,9 @@ export function SallyChat({ token }: { token: string }) {
       {error && <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
       {dispatched ? (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center">
-          <p className="text-lg font-semibold text-emerald-900">Logged ✓</p>
-          <p className="mt-2 text-sm text-emerald-800">
+        <div className="rounded-xl border border-brand-200 bg-brand-50 p-6 text-center">
+          <p className="text-lg font-semibold text-brand-900">Logged ✓</p>
+          <p className="mt-2 text-sm text-brand-800">
             Sally has passed this on. Your rental provider will review it, and a tradie will be in touch with a
             quote.
           </p>
@@ -120,7 +120,7 @@ export function SallyChat({ token }: { token: string }) {
             type="button"
             onClick={send}
             disabled={pending || !input.trim()}
-            className="rounded-lg bg-emerald-600 px-5 py-2.5 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-5 py-2.5 font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
           >
             Send
           </button>

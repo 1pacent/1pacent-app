@@ -22,13 +22,13 @@ export default async function DashboardPage() {
   return (
     <div>
       <div className="flex items-baseline justify-between">
-        <h1 className="text-2xl font-bold text-slate-900">Portfolio compliance</h1>
+        <h1 className="font-serif text-2xl font-semibold text-slate-900">Portfolio compliance</h1>
         <p className="text-sm text-slate-500">
           <span className="font-semibold text-red-600">{totals.red} overdue</span>
           {" · "}
           <span className="font-semibold text-amber-600">{totals.amber} due soon</span>
           {" · "}
-          <span className="font-semibold text-emerald-600">{totals.green} compliant</span>
+          <span className="font-semibold text-brand-600">{totals.green} compliant</span>
         </p>
       </div>
 
@@ -62,7 +62,7 @@ export default async function DashboardPage() {
                       ? "bg-red-500"
                       : r.status === "amber"
                         ? "bg-amber-400"
-                        : "bg-emerald-500"
+                        : "bg-brand-500"
                   }`}
                 />
               ))}

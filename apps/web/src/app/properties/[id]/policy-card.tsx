@@ -86,12 +86,12 @@ export function PolicyCard({ propertyId, existingRules }: { propertyId: string; 
       </div>
 
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
-      {saved && <p className="mt-2 text-xs font-medium text-emerald-700">Policy saved ✓</p>}
+      {saved && <p className="mt-2 text-xs font-medium text-brand-700">Policy saved ✓</p>}
       <button
         type="button"
         onClick={save}
         disabled={pending}
-        className="mt-3 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+        className="mt-3 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
       >
         {pending ? "Saving…" : "Save policy"}
       </button>

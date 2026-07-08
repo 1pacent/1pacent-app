@@ -92,7 +92,7 @@ function StartRow({ token, job }: { token: string; job: JobsPanelJob }) {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (done) return <JobLine job={job}><span className="text-xs font-medium text-emerald-700">Started ✓</span></JobLine>;
+  if (done) return <JobLine job={job}><span className="text-xs font-medium text-brand-700">Started ✓</span></JobLine>;
 
   return (
     <JobLine job={job}>
@@ -111,7 +111,7 @@ function StartRow({ token, job }: { token: string; job: JobsPanelJob }) {
               setDone(true);
             })
           }
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
         >
           {pending ? "Starting…" : "Start job"}
         </button>
@@ -127,7 +127,7 @@ function MarkDoneRow({ token, job }: { token: string; job: JobsPanelJob }) {
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (done) return <JobLine job={job}><span className="text-xs font-medium text-emerald-700">Sent to tenant ✓</span></JobLine>;
+  if (done) return <JobLine job={job}><span className="text-xs font-medium text-brand-700">Sent to tenant ✓</span></JobLine>;
 
   if (!open) {
     return (
@@ -135,7 +135,7 @@ function MarkDoneRow({ token, job }: { token: string; job: JobsPanelJob }) {
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
         >
           Mark done
         </button>
@@ -169,7 +169,7 @@ function MarkDoneRow({ token, job }: { token: string; job: JobsPanelJob }) {
               setDone(true);
             })
           }
-          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
         >
           {pending ? "Sending…" : "Send to tenant"}
         </button>
@@ -190,7 +190,7 @@ function InvoiceRow({ token, job }: { token: string; job: JobsPanelJob }) {
   const [done, setDone] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  if (done) return <JobLine job={job}><span className="text-xs font-medium text-emerald-700">Invoiced ✓</span></JobLine>;
+  if (done) return <JobLine job={job}><span className="text-xs font-medium text-brand-700">Invoiced ✓</span></JobLine>;
 
   return (
     <form
@@ -225,7 +225,7 @@ function InvoiceRow({ token, job }: { token: string; job: JobsPanelJob }) {
       <button
         type="submit"
         disabled={pending}
-        className="mt-2 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+        className="mt-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
       >
         {pending ? "Saving…" : "Send invoice"}
       </button>

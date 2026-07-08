@@ -11,11 +11,11 @@ export function ApprovalCard({ token }: { token: string }) {
 
   if (result?.ok) {
     return (
-      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center">
-        <p className="text-lg font-semibold text-emerald-900">
+      <div className="rounded-xl border border-brand-200 bg-brand-50 p-6 text-center">
+        <p className="text-lg font-semibold text-brand-900">
           {result.state === "approved" ? "Approved ✓" : "Declined"}
         </p>
-        <p className="mt-1 text-sm text-emerald-800">
+        <p className="mt-1 text-sm text-brand-800">
           {result.state === "approved"
             ? "We'll dispatch a tradie and keep you posted with evidence at every step."
             : "Your property manager has been notified of your decision."}
@@ -33,7 +33,7 @@ export function ApprovalCard({ token }: { token: string }) {
         <button
           disabled={pending}
           onClick={() => startTransition(async () => setResult(await decide(token, "approve")))}
-          className="flex-1 rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+          className="flex-1 rounded-lg bg-brand-600 px-4 py-3 font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
         >
           Approve
         </button>

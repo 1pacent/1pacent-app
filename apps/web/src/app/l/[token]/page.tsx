@@ -18,8 +18,8 @@ export default async function LeadIntakePage({ params }: { params: Promise<{ tok
 
   return (
     <div className="mx-auto max-w-md">
-      <p className="text-sm font-medium text-emerald-700">{info.tradieBusinessName}</p>
-      <h1 className="mt-1 text-2xl font-bold text-slate-900">Get in touch</h1>
+      <p className="text-sm font-medium text-brand-700">{info.tradieBusinessName}</p>
+      <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">Get in touch</h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
         Chat with Sally below — she&apos;ll get your job details and {info.tradieBusinessName} will follow up with
         a quote.

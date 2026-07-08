@@ -59,8 +59,8 @@ export default async function TenantIntakePage({ params }: { params: Promise<{ t
 
   return (
     <div className="mx-auto max-w-md">
-      <p className="text-sm font-medium text-emerald-700">Report a repair — no account needed</p>
-      <h1 className="mt-1 text-2xl font-bold text-slate-900">
+      <p className="text-sm font-medium text-brand-700">Report a repair — no account needed</p>
+      <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">
         {context.property.address}, {context.property.suburb}
       </h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">

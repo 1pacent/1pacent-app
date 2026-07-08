@@ -28,7 +28,7 @@ const TRUST_LABEL: Record<QuotesPanelQuote["trustTier"], string> = {
 
 const TRUST_CLASS: Record<QuotesPanelQuote["trustTier"], string> = {
   unproven: "bg-slate-100 text-slate-600",
-  reliable: "bg-emerald-100 text-emerald-700",
+  reliable: "bg-brand-100 text-brand-700",
   needs_review: "bg-amber-100 text-amber-700",
 };
 
@@ -39,7 +39,7 @@ export function QuotesPanel({ requestId, quotes }: { requestId: string; quotes: 
   const [, startTransition] = useTransition();
 
   if (accepted) {
-    return <p className="mt-2 text-sm font-medium text-emerald-700">Tradie dispatched ✓</p>;
+    return <p className="mt-2 text-sm font-medium text-brand-700">Tradie dispatched ✓</p>;
   }
 
   function accept(quoteId: string) {
@@ -67,7 +67,7 @@ export function QuotesPanel({ requestId, quotes }: { requestId: string; quotes: 
             <div>
               <div className="flex items-center gap-2">
                 {q.rank === 1 && (
-                  <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-xs font-semibold text-white">
+                  <span className="rounded-full bg-brand-600 px-2 py-0.5 text-xs font-semibold text-white">
                     Top pick
                   </span>
                 )}
@@ -96,7 +96,7 @@ export function QuotesPanel({ requestId, quotes }: { requestId: string; quotes: 
                 type="button"
                 onClick={() => accept(q.quoteId)}
                 disabled={pendingId !== null}
-                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
               >
                 {pendingId === q.quoteId ? "Dispatching…" : "Accept"}
               </button>

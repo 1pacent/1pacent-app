@@ -42,7 +42,7 @@ function Row({ id, label, minter }: { id: string; label: string; minter: Minter 
             href={result}
             target="_blank"
             rel="noreferrer"
-            className="rounded-md bg-emerald-50 px-2.5 py-1 font-mono text-xs text-emerald-700 hover:bg-emerald-100"
+            className="rounded-md bg-brand-50 px-2.5 py-1 font-mono text-xs text-brand-700 hover:bg-brand-100"
           >
             {result} ↗
           </a>

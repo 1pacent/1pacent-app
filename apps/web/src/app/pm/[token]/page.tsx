@@ -26,8 +26,8 @@ export default async function PmPortfolioPage({ params }: { params: Promise<{ to
 
   return (
     <div className="mx-auto max-w-3xl">
-      <p className="text-sm font-medium text-emerald-700">Property manager portfolio</p>
-      <h1 className="mt-1 text-2xl font-bold text-slate-900">Hi {context.pmName}</h1>
+      <p className="text-sm font-medium text-brand-700">Property manager portfolio</p>
+      <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">Hi {context.pmName}</h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
         You&apos;re informed here as decisions happen — landlords approve their own maintenance spend
         directly, so you don&apos;t need to triage every request yourself.
@@ -38,9 +38,9 @@ export default async function PmPortfolioPage({ params }: { params: Promise<{ to
       )}
 
       {context.batchableCompliance.length > 0 && (
-        <div className="mb-8 rounded-xl border border-emerald-200 bg-emerald-50 p-5">
-          <h2 className="text-sm font-semibold text-emerald-900">Batchable compliance</h2>
-          <p className="mt-1 text-xs text-emerald-800">
+        <div className="mb-8 rounded-xl border border-brand-200 bg-brand-50 p-5">
+          <h2 className="text-sm font-semibold text-brand-900">Batchable compliance</h2>
+          <p className="mt-1 text-xs text-brand-800">
             These properties need the same check around the same time, in the same suburb — one tradie,
             one route, instead of separate callouts for each.
           </p>

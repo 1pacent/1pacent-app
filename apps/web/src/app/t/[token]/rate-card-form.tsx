@@ -25,7 +25,7 @@ export function RateCardForm({ token, rateCard }: { token: string; rateCard: Rat
       className="space-y-6"
     >
       {result && (
-        <p className={`rounded-lg px-4 py-3 text-sm ${result.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+        <p className={`rounded-lg px-4 py-3 text-sm ${result.ok ? "bg-brand-50 text-brand-700" : "bg-red-50 text-red-700"}`}>
           {result.ok ? "Rate card saved ✓" : result.error}
         </p>
       )}
@@ -109,7 +109,7 @@ export function RateCardForm({ token, rateCard }: { token: string; rateCard: Rat
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-lg bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+        className="w-full rounded-lg bg-brand-600 px-4 py-3 font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
       >
         {pending ? "Saving…" : "Save rate card"}
       </button>

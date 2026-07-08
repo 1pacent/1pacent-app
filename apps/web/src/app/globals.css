@@ -1,9 +1,46 @@
 @import "tailwindcss";
 
+/**
+ * Property Passport palette. "brand" replaces the old generic Tailwind
+ * emerald for every CTA/button/link/badge in the app (traffic-light.tsx is
+ * deliberately left on real emerald — that's a compliance-status semantic,
+ * not a brand color, and must never shift when the brand palette changes).
+ * "gold" is the passport-foil accent, used sparingly for marks, headings,
+ * and highlights — never for body text or large fills.
+ */
+@theme {
+  --color-brand-50: #eaf3ee;
+  --color-brand-100: #d2e6da;
+  --color-brand-200: #a8cdb7;
+  --color-brand-300: #79b090;
+  --color-brand-400: #4c8e6d;
+  --color-brand-500: #2f7052;
+  --color-brand-600: #1f4a38;
+  --color-brand-700: #16342a;
+  --color-brand-800: #10261f;
+  --color-brand-900: #0b1a16;
+
+  --color-gold-50: #fbf6ea;
+  --color-gold-100: #f5e9cb;
+  --color-gold-200: #edd8a0;
+  --color-gold-300: #e4c06e;
+  --color-gold-400: #d3ab54;
+  --color-gold-500: #c9a24b;
+  --color-gold-600: #a9843c;
+  --color-gold-700: #866731;
+  --color-gold-800: #634c25;
+  --color-gold-900: #453518;
+
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-serif), ui-serif, Georgia, serif;
+  --font-mono: var(--font-mono), ui-monospace, "SF Mono", Consolas, monospace;
+}
+
 :root {
   color-scheme: light;
 }
 
 body {
   @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: var(--font-sans);
 }

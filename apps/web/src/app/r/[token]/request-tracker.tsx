@@ -51,7 +51,7 @@ function RequestCard({ token, request }: { token: string; request: TrackerReques
       <div className="flex items-center justify-between gap-2">
         <p className="font-medium text-slate-900">{request.title}</p>
         {request.isWarrantyClaim && (
-          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+          <span className="rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">
             Warranty claim — no charge
           </span>
         )}
@@ -81,13 +81,13 @@ function RequestCard({ token, request }: { token: string; request: TrackerReques
                 setConfirmed(true);
               })
             }
-            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700 disabled:opacity-50"
           >
             {pending ? "Confirming…" : "Confirm it's fixed"}
           </button>
         </div>
       )}
-      {confirmed && <p className="mt-3 text-xs font-medium text-emerald-700">Confirmed ✓</p>}
+      {confirmed && <p className="mt-3 text-xs font-medium text-brand-700">Confirmed ✓</p>}
     </div>
   );
 }
