@@ -1,0 +1,66 @@
+version: "3.8"
+
+services:
+  # Local PostgreSQL for development (Supabase is used in production)
+  postgres:
+    image: postgres:16-alpine
+    container_name: 1pacent-postgres-1
+    environment:
+      POSTGRES_DB: 1pacent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    restart: unless-stopped
+    networks:
+      - 1pacent-net
+
+  # n8n — needed for the tradie app workflows
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: 1pacent-n8n-1
+    environment:
+      N8N_PORT: 5678
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_DATABASE: 1pacent_n8n
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_USER: postgres
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+    ports:
+      - "5678:5678"
+    depends_on:
+      - postgres
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/workflows
+    restart: unless-stopped
+    networks:
+      - 1pacent-net
+
+  # API backend — built from the app's own packages
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: 1pacent-api-1
+  #   env_file: .env
+  #   ports:
+  #     - "${API_PORT:-3001}:3001"
+  #   depends_on:
+  #     - postgres
+  #   restart: unless-stopped
+  #   networks:
+  #     - 1pacent-net
+
+volumes:
+  pgdata:
+  n8n_data:
+
+networks:
+  1pacent-net:
+    driver: bridge
+
