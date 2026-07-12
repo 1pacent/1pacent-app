@@ -1,18 +1,25 @@
 import "server-only";
 import {
   assertCents,
+  assessAssetHorizon,
+  buildObligationsCalendar,
   computeBatchableCompliance,
   decideApproval,
+  earliestSlotStart,
+  estimateDepreciation,
   evaluateApprovalPolicy,
   evaluateProperty,
   findWarrantyMatch,
+  formatSlot,
   hashToken,
   isUrgentCategory,
   issueToken,
   projectState,
+  proposeSlots,
   rankQuotes,
   scoreAvailability,
   scoreTrust,
+  summariseSpending,
   transition,
   validateQuoteSubmission,
   validateToken,
@@ -26,12 +33,33 @@ import {
   type TokenScope,
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
+import {
+  buildOwnerCanvas,
+  buildPmCanvas,
+  buildTenantCanvas,
+  buildTradieCanvas,
+  type CanvasSlotInfo,
+  type QuotePickInfo,
+  type ReportListing,
+  type WarrantyCatchInfo,
+} from "./canvas";
 import type {
   AcceptQuoteResult,
   ApprovalContext,
   ApprovalPolicyRuleInput,
   ApprovalPolicyRuleView,
+  AssetHorizonView,
+  AutoQuoteSettingsView,
+  CanvasCard,
+  ComplianceStatusView,
   DataSource,
+  GeneratedReportView,
+  ObligationsCalendarView,
+  OwnerPortalContext,
+  RankedQuoteOption,
+  ReportKind,
+  SpendingSummaryView,
+  TradieAccuracyView,
   DispatchQuotesResult,
   IntakeContext,
   InvoiceJobInput,
@@ -753,6 +781,43 @@ export const supabaseData: DataSource = {
       });
     }
 
+    // Nelly's auto-quote (v6 §4.4): opt-in, bounded, revocable — the tradie's
+    // standard rate-card quote submits the moment the invite lands, attributed
+    // 'nelly:auto-quote' in the quote event, never silent.
+    const { data: reqCat } = await db
+      .from("maintenance_requests")
+      .select("category")
+      .eq("id", req.id)
+      .maybeSingle();
+    for (const invite of invites) {
+      const card = await rateCardSuggestion(db, invite.tradieContactId, (reqCat?.category ?? "other") as RequestCategory);
+      if (!card?.autoQuoteEnabled || card.suggestedQuoteCents === null) continue;
+      const total = card.suggestedQuoteCents + card.callOutFeeCents;
+      if (card.autoQuoteMaxTotalCents !== null && total > card.autoQuoteMaxTotalCents) continue;
+      await db
+        .from("quotes")
+        .update({
+          status: "submitted",
+          quote_cents: card.suggestedQuoteCents,
+          call_out_fee_cents: card.callOutFeeCents,
+          note: `Auto-submitted by Nelly from ${invite.tradieName}'s rate card (opt-in, within set bounds).`,
+          submitted_at: new Date().toISOString(),
+        })
+        .eq("id", invite.quoteId)
+        .eq("status", "invited");
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "quote",
+        aggregate_id: invite.quoteId,
+        event_type: "quote_submitted",
+        actor_type: "system",
+        actor_id: "nelly:auto-quote",
+        payload: { auto: true, boundedByCents: card.autoQuoteMaxTotalCents },
+        ai_meta: null,
+      });
+      await maybeAutoAcceptAfterQuoteRound(db, invite.quoteId);
+    }
+
     return { ok: true, invites, requestTitle: req.title, requestDescription: req.description, propertyAddress };
   },
 
@@ -865,85 +930,11 @@ export const supabaseData: DataSource = {
     });
     await db.from("access_tokens").update({ used_at: new Date().toISOString() }).eq("id", resolved.id);
 
-    // Approval policy (Developer Brief v4 §3): once every invited quote for this
-    // request has resolved (submitted or declined), rank them exactly like the
-    // landlord's manual view does and check whether the property's policy
-    // pre-approves the winner — evaluated against a real price, unlike the
-    // intake-time gate which never sees one.
-    const { data: quoteRow } = await db.from("quotes").select("request_id").eq("id", quote.id).maybeSingle();
-    if (!quoteRow) return { ok: true as const };
-
-    const { data: siblingQuotes } = await db
-      .from("quotes")
-      .select("status")
-      .eq("request_id", quoteRow.request_id);
-    const stillInvited = (siblingQuotes ?? []).some((q) => q.status === "invited");
-    if (stillInvited) return { ok: true as const };
-
-    const { data: reqRow } = await db
-      .from("maintenance_requests")
-      .select("id, org_id, property_id, category, status")
-      .eq("id", quoteRow.request_id)
-      .maybeSingle();
-    if (!reqRow || (reqRow.status as RequestState) !== "quoting") return { ok: true as const };
-
-    const [allQuotes, trust, policyRules] = await Promise.all([
-      supabaseData.listQuotesForRequest(reqRow.id),
-      (async () => {
-        const { data: submittedTradies } = await db
-          .from("quotes")
-          .select("tradie_contact_id")
-          .eq("request_id", reqRow.id)
-          .eq("status", "submitted");
-        const ids = [...new Set((submittedTradies ?? []).map((r) => r.tradie_contact_id as string))];
-        return supabaseData.getTradieTrustSummaries(ids);
-      })(),
-      db
-        .from("approval_policy_rules")
-        .select("max_total_cents, min_trust_score, exclude_categories")
-        .eq("property_id", reqRow.property_id)
-        .eq("enabled", true)
-        .order("priority", { ascending: true }),
-    ]);
-
-    const rankable = allQuotes
-      .filter((q) => q.status === "submitted" && q.quoteCents !== null && q.callOutFeeCents !== null)
-      .map((q) => ({
-        quoteId: q.quoteId,
-        totalCents: q.quoteCents! + q.callOutFeeCents!,
-        trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
-        availabilityScore: scoreAvailability({
-          tradieRespondedWithinMinutes: q.respondedWithinMinutes,
-          matchesTenantPreferredWindow: false,
-          currentOpenJobCount: 0,
-        }),
-      }));
-    if (rankable.length === 0) return { ok: true as const };
-    const ranked = rankQuotes(rankable);
-    const winner = ranked[0]!;
-
-    const rules: ApprovalPolicyRule[] = ((policyRules.data ?? []) as Array<{
-      max_total_cents: number | null;
-      min_trust_score: number | null;
-      exclude_categories: string[];
-    }>).map((r) => ({
-      maxTotalCents: r.max_total_cents,
-      minTrustScore: r.min_trust_score,
-      excludeCategories: (r.exclude_categories ?? []) as RequestCategory[],
-    }));
-    const policyResult = evaluateApprovalPolicy(rules, {
-      category: reqRow.category as RequestCategory,
-      totalCents: winner.totalCents,
-      trustScore: winner.trustScore,
-    });
-    if (!policyResult.autoApprove) return { ok: true as const };
-
-    const acceptResult = await acceptQuoteTx(db, reqRow, winner.quoteId, "system", "approval-policy");
-    if (!acceptResult.ok || !acceptResult.accepted || !acceptResult.declined) return { ok: true as const };
-    return {
-      ok: true as const,
-      autoAccepted: { requestId: reqRow.id, accepted: acceptResult.accepted, declined: acceptResult.declined },
-    };
+    // Approval policy (Developer Brief v4 §3): once every invited quote for
+    // this request has resolved, rank them and check whether the property's
+    // policy pre-approves the winner. Shared with the auto-quote hook.
+    const autoAccepted = await maybeAutoAcceptAfterQuoteRound(db, quote.id);
+    return autoAccepted ? { ok: true as const, autoAccepted } : { ok: true as const };
   },
 
   async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
@@ -1356,7 +1347,7 @@ export const supabaseData: DataSource = {
 
   async getTestLinkTargets(): Promise<TestLinkTargets> {
     const db = serviceClient();
-    const [{ data: properties }, { data: pms }, { data: tradies }] = await Promise.all([
+    const [{ data: properties }, { data: pms }, { data: tradies }, { data: owners }] = await Promise.all([
       db.from("properties").select("id, address_line1, suburb").order("created_at", { ascending: true }),
       db
         .from("contacts")
@@ -1364,6 +1355,7 @@ export const supabaseData: DataSource = {
         .eq("kind", "property_manager")
         .order("created_at", { ascending: true }),
       db.from("contacts").select("id, full_name").eq("kind", "tradie").order("created_at", { ascending: true }),
+      db.from("contacts").select("id, full_name").eq("kind", "owner").order("created_at", { ascending: true }),
     ]);
     return {
       properties: ((properties ?? []) as Array<{ id: string; address_line1: string; suburb: string }>).map((p) => ({
@@ -1375,6 +1367,10 @@ export const supabaseData: DataSource = {
         name: c.full_name,
       })),
       tradies: ((tradies ?? []) as Array<{ id: string; full_name: string }>).map((c) => ({
+        id: c.id,
+        name: c.full_name,
+      })),
+      owners: ((owners ?? []) as Array<{ id: string; full_name: string }>).map((c) => ({
         id: c.id,
         name: c.full_name,
       })),
@@ -1617,7 +1613,7 @@ export const supabaseData: DataSource = {
     if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
     const { data: req } = await db
       .from("maintenance_requests")
-      .select("id, org_id, property_id, status")
+      .select("id, org_id, property_id, status, compliance_requirement_key")
       .eq("id", wo.request_id)
       .maybeSingle();
     if (!req) return { ok: false, error: "Request not found." };
@@ -1667,8 +1663,21 @@ export const supabaseData: DataSource = {
         call_out_fee_cents: input.callOutFeeCents,
         asset_id: assetId,
         warranty_expires_at: warrantyExpiresAt,
+        invoiced_at: new Date().toISOString(),
       })
       .eq("id", wo.id);
+
+    // PM compliance batch (v5 §3.1): completing the batch-created job files
+    // the certificate — the traffic light goes green from real work.
+    if (req.compliance_requirement_key) {
+      await db.from("compliance_certificates").insert({
+        org_id: req.org_id,
+        property_id: req.property_id,
+        requirement_key: req.compliance_requirement_key,
+        completed_at: new Date().toISOString().slice(0, 10),
+        uploaded_by: "system:job-completion",
+      });
+    }
 
     await db.from("events").insert({
       org_id: req.org_id,
@@ -1796,6 +1805,564 @@ export const supabaseData: DataSource = {
     }
     return { ok: true };
   },
+
+  // ——— Talk / See / Do (Developer Brief v6) ———
+
+  async getCanvasCards(token: string): Promise<CanvasCard[]> {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal", "pm_portfolio", "tradie_portal"]);
+    if (!row) return [];
+    const db = serviceClient();
+
+    if (row.scope === "tenant_intake") {
+      const [reqs, compliance] = await Promise.all([
+        supabaseData.getRequestStatusForContact(token),
+        supabaseData.getComplianceStatus(token),
+      ]);
+      return buildTenantCanvas({
+        token,
+        requests: reqs,
+        slots: await slotInfosForRequests(db, reqs.map((r) => r.id)),
+        compliance,
+      });
+    }
+
+    if (row.scope === "owner_portal") {
+      const ctx = await supabaseData.getOwnerPortalContext(token);
+      if (!ctx) return [];
+      const allReqs = ctx.properties.flatMap((p) => p.requests);
+      const nowIso = new Date().toISOString();
+
+      const quotePicks: QuotePickInfo[] = [];
+      for (const r of allReqs.filter((x) => x.state === "quoting")) {
+        const requestQuotes = await supabaseData.listQuotesForRequest(r.id);
+        if (requestQuotes.some((q) => q.status === "invited")) continue;
+        const submitted = requestQuotes.filter((q) => q.status === "submitted");
+        if (submitted.length === 0) continue;
+        const trust = await supabaseData.getTradieTrustSummaries([
+          ...new Set(submitted.map((q) => q.tradieContactId)),
+        ]);
+        const rankable = submitted
+          .filter((q) => q.quoteCents !== null && q.callOutFeeCents !== null)
+          .map((q) => ({
+            quoteId: q.quoteId,
+            totalCents: q.quoteCents! + q.callOutFeeCents!,
+            trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+            availabilityScore: scoreAvailability({
+              tradieRespondedWithinMinutes: q.respondedWithinMinutes,
+              matchesTenantPreferredWindow: false,
+              currentOpenJobCount: 0,
+            }),
+          }));
+        if (rankable.length === 0) continue;
+        const ranked: RankedQuoteOption[] = rankQuotes(rankable).map((rq, i) => {
+          const q = submitted.find((x) => x.quoteId === rq.quoteId)!;
+          return {
+            quoteId: rq.quoteId,
+            tradieName: q.tradieName,
+            totalCents: rq.totalCents,
+            trustScore: rq.trustScore,
+            recommended: i === 0,
+          };
+        });
+        quotePicks.push({
+          requestId: r.id,
+          title: r.title,
+          estimateCents: r.estimateCents,
+          quotes: ranked,
+          at: r.events[r.events.length - 1]?.at ?? nowIso,
+        });
+      }
+
+      const warrantyCatches: WarrantyCatchInfo[] = [];
+      for (const r of allReqs.filter((x) => x.isWarrantyClaim)) {
+        const { data: claimRow } = await db
+          .from("maintenance_requests")
+          .select("warranty_claim_of_work_order_id")
+          .eq("id", r.id)
+          .maybeSingle();
+        let tradieName = "the original tradie";
+        if (claimRow?.warranty_claim_of_work_order_id) {
+          const { data: originalWo } = await db
+            .from("work_orders")
+            .select("tradie_contact_id, contacts(full_name)")
+            .eq("id", claimRow.warranty_claim_of_work_order_id)
+            .maybeSingle();
+          const contact = normalizeContact(
+            (originalWo as { contacts: ContactJoin | ContactJoin[] | null } | null)?.contacts ?? null,
+          );
+          if (contact?.full_name) tradieName = contact.full_name;
+        }
+        warrantyCatches.push({
+          requestId: r.id,
+          title: r.title,
+          tradieName,
+          savedApproxCents: (await categoryMedians(db))[r.category] ?? null,
+          at: r.events[r.events.length - 1]?.at ?? nowIso,
+        });
+      }
+
+      const [horizon, spending, reports] = await Promise.all([
+        supabaseData.getAssetHorizon(token),
+        supabaseData.getSpendingSummary(token, 12),
+        db
+          .from("generated_reports")
+          .select("id, kind, created_at")
+          .eq("audience_contact_id", ctx.ownerContactId)
+          .order("created_at", { ascending: true }),
+      ]);
+      const reportListings: ReportListing[] = ((reports.data ?? []) as Array<{
+        id: string;
+        kind: ReportKind;
+        created_at: string;
+      }>).map((r) => ({ id: r.id, kind: r.kind, createdAt: r.created_at }));
+
+      return buildOwnerCanvas({
+        token,
+        ctx,
+        quotePicks,
+        slots: await slotInfosForRequests(db, allReqs.map((r) => r.id)),
+        warrantyCatches,
+        horizon,
+        spending,
+        reports: reportListings,
+      });
+    }
+
+    if (row.scope === "pm_portfolio") {
+      const [ctx, obligations] = await Promise.all([
+        supabaseData.getPmPortfolioContext(token),
+        supabaseData.getObligationsCalendar(token, 120),
+      ]);
+      if (!ctx) return [];
+      return buildPmCanvas({
+        properties: ctx.properties.map((p) => ({
+          id: p.id,
+          address: p.address,
+          suburb: p.suburb,
+          overall: p.compliance.overall,
+          requests: p.requests,
+        })),
+        obligations,
+      });
+    }
+
+    // tradie_portal
+    const [jobs, accuracy, autoQuote] = await Promise.all([
+      supabaseData.listTradieJobs(token),
+      supabaseData.getTradieAccuracy(token),
+      supabaseData.getAutoQuoteSettings(token),
+    ]);
+    const jobsWith = await Promise.all(
+      jobs.map(async (j) => {
+        const { data: wo } = await db
+          .from("work_orders")
+          .select("scheduled_start_at, scheduled_end_at, maintenance_requests!work_orders_request_id_fkey(property_id)")
+          .eq("id", j.workOrderId)
+          .maybeSingle();
+        const woRow = wo as {
+          scheduled_start_at: string | null;
+          scheduled_end_at: string | null;
+          maintenance_requests: { property_id: string } | { property_id: string }[] | null;
+        } | null;
+        const reqJoin = Array.isArray(woRow?.maintenance_requests)
+          ? woRow?.maintenance_requests[0]
+          : woRow?.maintenance_requests;
+        let briefing: string[] = [];
+        if (reqJoin?.property_id) {
+          const { data: assets } = await db
+            .from("property_assets")
+            .select("label, installed_at")
+            .eq("property_id", reqJoin.property_id);
+          briefing = ((assets ?? []) as Array<{ label: string; installed_at: string | null }>).map(
+            (a) => `${a.label}${a.installed_at ? ` (installed ${new Date(a.installed_at).getFullYear()})` : ""}`,
+          );
+        }
+        return {
+          ...j,
+          scheduledLabel: woRow?.scheduled_start_at
+            ? formatSlot({
+                startAt: new Date(woRow.scheduled_start_at),
+                endAt: new Date(woRow.scheduled_end_at ?? woRow.scheduled_start_at),
+              })
+            : null,
+          briefing,
+        };
+      }),
+    );
+    return buildTradieCanvas({ token, jobs: jobsWith, accuracy, autoQuote });
+  },
+
+  async getSpendingSummary(scopeToken: string, periodMonths: number): Promise<SpendingSummaryView | null> {
+    const db = serviceClient();
+    const propertyIds = await scopedPropertyIds(db, scopeToken);
+    if (propertyIds === null) return null;
+    return spendingForProperties(db, propertyIds, periodMonths);
+  },
+
+  async getAssetHorizon(scopeToken: string): Promise<AssetHorizonView[]> {
+    const db = serviceClient();
+    const propertyIds = await scopedPropertyIds(db, scopeToken);
+    if (propertyIds === null || propertyIds.length === 0) return [];
+    const medians = await categoryMedians(db);
+    const today = new Date();
+    const { data: assets } = await db
+      .from("property_assets")
+      .select("label, category, installed_at, property_id, properties(address_line1, suburb, state, postcode)")
+      .in("property_id", propertyIds)
+      .not("installed_at", "is", null);
+    return ((assets ?? []) as Array<{
+      label: string;
+      category: string;
+      installed_at: string;
+      properties:
+        | { address_line1: string; suburb: string; state: string; postcode: string }
+        | { address_line1: string; suburb: string; state: string; postcode: string }[]
+        | null;
+    }>)
+      .map((a) => {
+        const prop = Array.isArray(a.properties) ? a.properties[0] : a.properties;
+        const horizon = assessAssetHorizon({
+          category: a.category as RequestCategory,
+          installedAt: new Date(a.installed_at),
+          today,
+        });
+        return {
+          propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+          assetLabel: a.label,
+          category: a.category as RequestCategory,
+          ageYears: horizon.ageYears,
+          effectiveLifeYears: horizon.effectiveLifeYears,
+          remainingLifeYears: horizon.remainingLifeYears,
+          status: horizon.status,
+          plannedReplacementCents: medians[a.category as RequestCategory] ?? null,
+          disclaimer: horizon.disclaimer,
+        };
+      })
+      .sort((a, b) => a.remainingLifeYears - b.remainingLifeYears);
+  },
+
+  async getObligationsCalendar(scopeToken: string, horizonDays: number): Promise<ObligationsCalendarView | null> {
+    const db = serviceClient();
+    const propertyIds = await scopedPropertyIds(db, scopeToken);
+    if (propertyIds === null) return null;
+    return obligationsForProperties(propertyIds, horizonDays);
+  },
+
+  async generateReport(scopeToken: string, kind: ReportKind, subjectId?: string) {
+    const db = serviceClient();
+    const row = await resolveTokenAny(scopeToken, ["owner_portal", "pm_portfolio"]);
+    const propertyIds = await scopedPropertyIds(db, scopeToken);
+    if (!row || propertyIds === null) return { ok: false, error: "This link isn't active." };
+    const subject = subjectId && propertyIds.includes(subjectId) ? subjectId : propertyIds[0];
+    if (!subject) return { ok: false, error: "No property in scope for this report." };
+
+    let payload: Record<string, unknown>;
+    if (kind === "property_data_pack") {
+      payload = await buildDataPackPayload(db, subject, propertyIds);
+    } else if (kind === "spending_summary") {
+      payload = { ...(await spendingForProperties(db, propertyIds, 12)) };
+    } else if (kind === "obligations_calendar") {
+      payload = { ...(await obligationsForProperties(propertyIds, 120)) };
+    } else {
+      return { ok: false, error: `Report kind "${kind}" isn't available yet.` };
+    }
+
+    const { data: prop } = await db.from("properties").select("org_id").eq("id", subject).maybeSingle();
+    if (!prop) return { ok: false, error: "Property not found." };
+    const { data: created, error } = await db
+      .from("generated_reports")
+      .insert({
+        org_id: prop.org_id,
+        kind,
+        subject_id: subject,
+        audience_contact_id: row.contact_id,
+        payload,
+      })
+      .select("id")
+      .single();
+    if (error || !created) return { ok: false, error: error?.message ?? "Could not save the report." };
+    return { ok: true, reportId: created.id as string };
+  },
+
+  async getReport(scopeToken: string, reportId: string): Promise<GeneratedReportView | null> {
+    const row = await resolveTokenAny(scopeToken, ["owner_portal", "pm_portfolio", "tradie_portal"]);
+    if (!row) return null;
+    const db = serviceClient();
+    const { data } = await db
+      .from("generated_reports")
+      .select("id, kind, created_at, payload")
+      .eq("id", reportId)
+      .maybeSingle();
+    if (!data) return null;
+    return {
+      id: data.id as string,
+      kind: data.kind as ReportKind,
+      createdAt: data.created_at as string,
+      payload: (data.payload ?? {}) as Record<string, unknown>,
+    };
+  },
+
+  async getComplianceStatus(scopeToken: string): Promise<ComplianceStatusView[]> {
+    const db = serviceClient();
+    const row = await resolveTokenAny(scopeToken, ["tenant_intake", "owner_portal", "pm_portfolio"]);
+    if (!row) return [];
+    const propertyIds =
+      row.scope === "tenant_intake" ? (row.aggregate_id ? [row.aggregate_id] : []) : await scopedPropertyIds(db, scopeToken);
+    if (!propertyIds) return [];
+    const details = (await Promise.all(propertyIds.map((id) => supabaseData.getProperty(id)))).filter(
+      (p): p is PropertyDetail => p !== null,
+    );
+    return details.map((p) => ({
+      propertyAddress: `${p.address}, ${p.suburb}`,
+      overall: p.compliance.overall,
+      requirements: p.compliance.requirements.map((r) => ({
+        name: r.requirement.name,
+        status: r.status,
+        lastCompletedAt: r.lastCompletedAt?.toISOString() ?? null,
+        dueAt: r.dueAt?.toISOString() ?? null,
+      })),
+    }));
+  },
+
+  async getOwnerPortalContext(token: string): Promise<OwnerPortalContext | null> {
+    const resolved = await resolveToken(token, "owner_portal");
+    if (!resolved?.aggregate_id) return null;
+    const db = serviceClient();
+    const { data: owner } = await db
+      .from("contacts")
+      .select("id, full_name")
+      .eq("id", resolved.aggregate_id)
+      .maybeSingle();
+    if (!owner) return null;
+    const { data: owned } = await db.from("properties").select("id").eq("owner_contact_id", owner.id);
+    const details = (
+      await Promise.all(((owned ?? []) as Array<{ id: string }>).map((p) => supabaseData.getProperty(p.id)))
+    ).filter((p): p is PropertyDetail => p !== null);
+    return { ownerContactId: owner.id as string, ownerName: owner.full_name as string, properties: details };
+  },
+
+  async mintOwnerPortalLink(ownerContactId: string): Promise<MintLinkResult> {
+    const db = serviceClient();
+    const { data: owner } = await db
+      .from("contacts")
+      .select("id, org_id")
+      .eq("id", ownerContactId)
+      .eq("kind", "owner")
+      .maybeSingle();
+    if (!owner) return { ok: false, error: "Owner not found." };
+
+    const issued = issueToken("owner_portal");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: owner.org_id,
+      token_hash: issued.tokenHash,
+      scope: "owner_portal",
+      aggregate_id: owner.id,
+      contact_id: owner.id,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/o/${issued.token}` };
+  },
+
+  async confirmSlot(token: string, workOrderId: string, slotIndex: number) {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, proposed_slots")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo?.proposed_slots) return { ok: false, error: "No proposed slots for this job." };
+    const slots = wo.proposed_slots as Array<{ startAt: string; endAt: string }>;
+    const slot = slots[slotIndex];
+    if (!slot) return { ok: false, error: "That slot is no longer available." };
+
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, property_id")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    // Scope check in the data layer: the job must belong to a property this
+    // token can see.
+    if (row.scope === "tenant_intake") {
+      if (req.property_id !== row.aggregate_id) return { ok: false, error: "Job not found." };
+    } else {
+      const { data: prop } = await db
+        .from("properties")
+        .select("owner_contact_id")
+        .eq("id", req.property_id)
+        .maybeSingle();
+      if (prop?.owner_contact_id !== row.aggregate_id) return { ok: false, error: "Job not found." };
+    }
+
+    await db
+      .from("work_orders")
+      .update({ scheduled_start_at: slot.startAt, scheduled_end_at: slot.endAt, proposed_slots: null })
+      .eq("id", wo.id);
+    // Human actor on the work-order aggregate — the audit point. (The request
+    // is already "scheduled"; no state transition fires here.)
+    await db.from("events").insert({
+      org_id: wo.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: "slot_confirmed",
+      actor_type: row.scope === "tenant_intake" ? "tenant" : "landlord",
+      actor_id: `token:${row.id}`,
+      payload: { startAt: slot.startAt, endAt: slot.endAt },
+    });
+    return { ok: true };
+  },
+
+  async dispatchComplianceBatch(pmPortfolioToken: string, input: { requirementKey: string; suburb: string }) {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const ctx = await supabaseData.getPmPortfolioContext(pmPortfolioToken);
+    if (!ctx) return { ok: false, error: "Portfolio not found." };
+
+    const targets = ctx.properties.filter(
+      (p) =>
+        p.suburb === input.suburb &&
+        p.compliance.requirements.some(
+          (r) => r.requirement.key === input.requirementKey && r.status !== "green" && r.dueAt,
+        ),
+    );
+    if (targets.length === 0) return { ok: false, error: "No batchable properties for that requirement." };
+    const requirementName =
+      targets[0]!.compliance.requirements.find((r) => r.requirement.key === input.requirementKey)?.requirement
+        .name ?? input.requirementKey;
+    const category = complianceCategoryFor(input.requirementKey);
+
+    const db = serviceClient();
+    let dispatched = 0;
+    for (const property of targets) {
+      // Skip if an open batch request already exists for this requirement.
+      const { data: existing } = await db
+        .from("maintenance_requests")
+        .select("id, status")
+        .eq("property_id", property.id)
+        .eq("compliance_requirement_key", input.requirementKey)
+        .not("status", "in", "(closed,cancelled,declined)")
+        .limit(1);
+      if (existing && existing.length > 0) continue;
+
+      const { data: propRow } = await db.from("properties").select("org_id").eq("id", property.id).maybeSingle();
+      if (!propRow) continue;
+      const state = projectState([
+        { eventType: "triage", actorType: "system" },
+        { eventType: "request_approval", actorType: "system" },
+        { eventType: "approve", actorType: "agency_user" },
+      ]);
+      const { data: created, error: createErr } = await db
+        .from("maintenance_requests")
+        .insert({
+          org_id: propRow.org_id,
+          property_id: property.id,
+          title: `${requirementName} (compliance batch)`,
+          description: `Scheduled ${requirementName.toLowerCase()} — batched across ${targets.length} ${input.suburb} properties for a negotiated rate.`,
+          category,
+          is_urgent: false,
+          status: state,
+          compliance_requirement_key: input.requirementKey,
+        })
+        .select("id")
+        .single();
+      if (createErr || !created) continue;
+
+      const base = {
+        org_id: propRow.org_id,
+        aggregate_type: "maintenance_request",
+        aggregate_id: created.id,
+      };
+      await db.from("events").insert([
+        { ...base, event_type: "triage", actor_type: "system", actor_id: "compliance-batch" },
+        { ...base, event_type: "request_approval", actor_type: "system", actor_id: "compliance-batch" },
+        // The PM's tap is the human approval — attributed to their contact id.
+        {
+          ...base,
+          event_type: "approve",
+          actor_type: "agency_user",
+          actor_id: resolved.contact_id,
+          payload: { note: "PM batch dispatch" },
+        },
+      ]);
+      await supabaseData.dispatchQuotesForRequest(created.id as string);
+      dispatched += 1;
+    }
+    return { ok: true, dispatched };
+  },
+
+  async getAutoQuoteSettings(tradiePortalToken: string): Promise<AutoQuoteSettingsView | null> {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const { data: card } = await db
+      .from("tradie_rate_cards")
+      .select("auto_quote_enabled, auto_quote_max_total_cents")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .maybeSingle();
+    if (!card) return { enabled: false, maxTotalCents: null };
+    return {
+      enabled: Boolean(card.auto_quote_enabled),
+      maxTotalCents: card.auto_quote_max_total_cents === null ? null : Number(card.auto_quote_max_total_cents),
+    };
+  },
+
+  async setAutoQuote(tradiePortalToken: string, input: { enabled: boolean; maxTotalCents: number | null }) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: card } = await db
+      .from("tradie_rate_cards")
+      .select("id")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .maybeSingle();
+    if (!card) return { ok: false, error: "Set up your rate card first — auto-quote submits from it." };
+    const { error } = await db
+      .from("tradie_rate_cards")
+      .update({ auto_quote_enabled: input.enabled, auto_quote_max_total_cents: input.maxTotalCents })
+      .eq("id", card.id);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  },
+
+  async getTradieAccuracy(tradiePortalToken: string): Promise<TradieAccuracyView | null> {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const { data: completed } = await db
+      .from("work_orders")
+      .select("quote_cents, invoice_cents, maintenance_requests!work_orders_request_id_fkey(title)")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .not("invoice_cents", "is", null)
+      .not("quote_cents", "is", null)
+      .gt("quote_cents", 0)
+      .order("created_at", { ascending: true });
+    const rows = (completed ?? []) as Array<{
+      quote_cents: number;
+      invoice_cents: number;
+      maintenance_requests: { title: string } | { title: string }[] | null;
+    }>;
+    const recentJobs = rows.slice(-5).map((w) => {
+      const req = Array.isArray(w.maintenance_requests) ? w.maintenance_requests[0] : w.maintenance_requests;
+      return {
+        requestTitle: req?.title ?? "Job",
+        quoteCents: Number(w.quote_cents),
+        invoiceCents: Number(w.invoice_cents),
+        variancePct: Math.round(((Number(w.invoice_cents) - Number(w.quote_cents)) / Number(w.quote_cents)) * 100),
+      };
+    });
+    const variances = rows.map((w) => Math.abs(Number(w.invoice_cents) - Number(w.quote_cents)) / Number(w.quote_cents));
+    const avgAbsVariancePct =
+      variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
+    return {
+      completedJobs: rows.length,
+      avgAbsVariancePct,
+      trustScore: scoreTrust({ completedJobs: rows.length, avgAbsVariancePct }),
+      recentJobs,
+    };
+  },
 };
 
 interface ContactJoin {
@@ -1881,15 +2448,49 @@ async function acceptQuoteTx(
     actor_id: actorId,
   });
 
-  await db.from("work_orders").insert({
-    org_id: req.org_id,
-    request_id: req.id,
-    tradie_contact_id: accepted.tradie_contact_id,
-    status: "scheduled",
-    quote_cents: accepted.quote_cents,
-    call_out_fee_cents: accepted.call_out_fee_cents,
-    quote_id: accepted.id,
-  });
+  // George's slot proposal (v7 §3): from the winning tradie's recurring
+  // availability windows; the tenant/owner confirms one on a card.
+  const [{ data: windows }, { data: reqDetail }] = await Promise.all([
+    db
+      .from("tradie_availability_windows")
+      .select("day_of_week, start_time, end_time")
+      .eq("tradie_contact_id", accepted.tradie_contact_id),
+    db.from("maintenance_requests").select("is_urgent").eq("id", req.id).maybeSingle(),
+  ]);
+  const slots = proposeSlots(
+    ((windows ?? []) as Array<{ day_of_week: number; start_time: string; end_time: string }>).map((w) => ({
+      dayOfWeek: w.day_of_week,
+      startTime: w.start_time,
+      endTime: w.end_time,
+    })),
+    { from: earliestSlotStart(new Date(), Boolean(reqDetail?.is_urgent)) },
+  );
+
+  const { data: createdWo } = await db
+    .from("work_orders")
+    .insert({
+      org_id: req.org_id,
+      request_id: req.id,
+      tradie_contact_id: accepted.tradie_contact_id,
+      status: "scheduled",
+      quote_cents: accepted.quote_cents,
+      call_out_fee_cents: accepted.call_out_fee_cents,
+      quote_id: accepted.id,
+      proposed_slots: slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString() })),
+    })
+    .select("id")
+    .single();
+  if (createdWo && slots.length > 0) {
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: createdWo.id,
+      event_type: "slots_proposed",
+      actor_type: "system",
+      actor_id: "george:scheduler",
+      payload: { slots: slots.map((s) => s.startAt.toISOString()) },
+    });
+  }
 
   const declined = rows.filter((q) => q.id !== quoteId);
   for (const q of declined) {
@@ -1918,6 +2519,129 @@ async function acceptQuoteTx(
       const c = normalizeContact(q.contacts);
       return { tradieName: c?.full_name ?? "", tradieEmail: c?.email ?? "" };
     }),
+  };
+}
+
+/** Once every invited quote for a request has resolved, rank the round and
+ * auto-accept the winner when the property's policy allows it. Shared by the
+ * human submission path and Nelly's auto-quote hook. Returns the accepted
+ * payload or null. */
+async function maybeAutoAcceptAfterQuoteRound(
+  db: ReturnType<typeof serviceClient>,
+  quoteId: string,
+): Promise<{
+  requestId: string;
+  accepted: { tradieName: string; tradieEmail: string; quoteCents: number; callOutFeeCents: number };
+  declined: Array<{ tradieName: string; tradieEmail: string }>;
+} | null> {
+  const { data: quoteRow } = await db.from("quotes").select("request_id").eq("id", quoteId).maybeSingle();
+  if (!quoteRow) return null;
+
+  const { data: siblingQuotes } = await db
+    .from("quotes")
+    .select("status")
+    .eq("request_id", quoteRow.request_id);
+  const stillInvited = (siblingQuotes ?? []).some((q) => q.status === "invited");
+  if (stillInvited) return null;
+
+  const { data: reqRow } = await db
+    .from("maintenance_requests")
+    .select("id, org_id, property_id, category, status")
+    .eq("id", quoteRow.request_id)
+    .maybeSingle();
+  if (!reqRow || (reqRow.status as RequestState) !== "quoting") return null;
+
+  const [allQuotes, trust, policyRules] = await Promise.all([
+    supabaseData.listQuotesForRequest(reqRow.id),
+    (async () => {
+      const { data: submittedTradies } = await db
+        .from("quotes")
+        .select("tradie_contact_id")
+        .eq("request_id", reqRow.id)
+        .eq("status", "submitted");
+      const ids = [...new Set((submittedTradies ?? []).map((r) => r.tradie_contact_id as string))];
+      return supabaseData.getTradieTrustSummaries(ids);
+    })(),
+    db
+      .from("approval_policy_rules")
+      .select("max_total_cents, min_trust_score, exclude_categories")
+      .eq("property_id", reqRow.property_id)
+      .eq("enabled", true)
+      .order("priority", { ascending: true }),
+  ]);
+
+  const rankable = allQuotes
+    .filter((q) => q.status === "submitted" && q.quoteCents !== null && q.callOutFeeCents !== null)
+    .map((q) => ({
+      quoteId: q.quoteId,
+      totalCents: q.quoteCents! + q.callOutFeeCents!,
+      trustScore: scoreTrust(trust[q.tradieContactId] ?? { completedJobs: 0, avgAbsVariancePct: null }),
+      availabilityScore: scoreAvailability({
+        tradieRespondedWithinMinutes: q.respondedWithinMinutes,
+        matchesTenantPreferredWindow: false,
+        currentOpenJobCount: 0,
+      }),
+    }));
+  if (rankable.length === 0) return null;
+  const ranked = rankQuotes(rankable);
+  const winner = ranked[0]!;
+
+  const rules: ApprovalPolicyRule[] = ((policyRules.data ?? []) as Array<{
+    max_total_cents: number | null;
+    min_trust_score: number | null;
+    exclude_categories: string[];
+  }>).map((r) => ({
+    maxTotalCents: r.max_total_cents,
+    minTrustScore: r.min_trust_score,
+    excludeCategories: (r.exclude_categories ?? []) as RequestCategory[],
+  }));
+  const policyResult = evaluateApprovalPolicy(rules, {
+    category: reqRow.category as RequestCategory,
+    totalCents: winner.totalCents,
+    trustScore: winner.trustScore,
+  });
+  if (!policyResult.autoApprove) return null;
+
+  const acceptResult = await acceptQuoteTx(db, reqRow, winner.quoteId, "system", "approval-policy");
+  if (!acceptResult.ok || !acceptResult.accepted || !acceptResult.declined) return null;
+  return { requestId: reqRow.id, accepted: acceptResult.accepted, declined: acceptResult.declined };
+}
+
+/** The tradie's own rate-card price for a category — never AI-invented. */
+async function rateCardSuggestion(
+  db: ReturnType<typeof serviceClient>,
+  tradieContactId: string,
+  category: RequestCategory,
+): Promise<{
+  rateCardId: string;
+  autoQuoteEnabled: boolean;
+  autoQuoteMaxTotalCents: number | null;
+  callOutFeeCents: number;
+  suggestedQuoteCents: number | null;
+} | null> {
+  const { data: rateCard } = await db
+    .from("tradie_rate_cards")
+    .select("id, call_out_fee_cents, hourly_rate_cents, auto_quote_enabled, auto_quote_max_total_cents")
+    .eq("tradie_contact_id", tradieContactId)
+    .maybeSingle();
+  if (!rateCard) return null;
+  const { data: item } = await db
+    .from("tradie_rate_card_items")
+    .select("flat_price_cents, typical_minutes")
+    .eq("rate_card_id", rateCard.id)
+    .eq("category", category)
+    .maybeSingle();
+  let suggested: number | null = null;
+  if (item?.flat_price_cents != null) suggested = Number(item.flat_price_cents);
+  else if (item?.typical_minutes != null)
+    suggested = Math.round((Number(rateCard.hourly_rate_cents) * Number(item.typical_minutes)) / 60);
+  return {
+    rateCardId: rateCard.id,
+    autoQuoteEnabled: Boolean(rateCard.auto_quote_enabled),
+    autoQuoteMaxTotalCents:
+      rateCard.auto_quote_max_total_cents === null ? null : Number(rateCard.auto_quote_max_total_cents),
+    callOutFeeCents: Number(rateCard.call_out_fee_cents),
+    suggestedQuoteCents: suggested,
   };
 }
 
@@ -1951,6 +2675,274 @@ async function resolveToken(rawToken: string, expectedScope: TokenScope): Promis
     expectedScope,
   );
   return check.ok ? row : null;
+}
+
+/** Resolve a token whose scope may be any of `allowed` (the canvas is one
+ * surface for four personas). Validation still runs against the row's own
+ * scope, so expiry/single-use rules hold. */
+async function resolveTokenAny(rawToken: string, allowed: TokenScope[]): Promise<TokenRow | null> {
+  const db = serviceClient();
+  const { data } = await db
+    .from("access_tokens")
+    .select("id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
+    .eq("token_hash", hashToken(rawToken))
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as unknown as TokenRow;
+  if (!allowed.includes(row.scope)) return null;
+  const check = validateToken(
+    rawToken,
+    {
+      tokenHash: row.token_hash,
+      scope: row.scope,
+      expiresAt: new Date(row.expires_at),
+      usedAt: row.used_at ? new Date(row.used_at) : null,
+    },
+    row.scope,
+  );
+  return check.ok ? row : null;
+}
+
+// ——— Talk / See / Do helpers (v6): deterministic projections, no LLM ———
+
+/** The property set a seat token may read — the data-layer security boundary. */
+async function scopedPropertyIds(
+  db: ReturnType<typeof serviceClient>,
+  scopeToken: string,
+): Promise<string[] | null> {
+  const row = await resolveTokenAny(scopeToken, ["owner_portal", "pm_portfolio"]);
+  if (!row) return null;
+  if (row.scope === "owner_portal") {
+    const { data } = await db.from("properties").select("id").eq("owner_contact_id", row.aggregate_id);
+    return ((data ?? []) as Array<{ id: string }>).map((p) => p.id);
+  }
+  const { data } = await db.from("properties").select("id").eq("pm_contact_id", row.contact_id);
+  return ((data ?? []) as Array<{ id: string }>).map((p) => p.id);
+}
+
+/** Median invoice per category across the network — the Cost Index. */
+async function categoryMedians(
+  db: ReturnType<typeof serviceClient>,
+): Promise<Partial<Record<RequestCategory, number>>> {
+  const { data } = await db
+    .from("work_orders")
+    .select("invoice_cents, maintenance_requests!work_orders_request_id_fkey(category)")
+    .not("invoice_cents", "is", null);
+  const byCategory = new Map<RequestCategory, number[]>();
+  for (const row of (data ?? []) as Array<{
+    invoice_cents: number;
+    maintenance_requests: { category: string } | { category: string }[] | null;
+  }>) {
+    const req = Array.isArray(row.maintenance_requests) ? row.maintenance_requests[0] : row.maintenance_requests;
+    if (!req) continue;
+    const category = req.category as RequestCategory;
+    if (!byCategory.has(category)) byCategory.set(category, []);
+    byCategory.get(category)!.push(Number(row.invoice_cents));
+  }
+  const medians: Partial<Record<RequestCategory, number>> = {};
+  for (const [category, values] of byCategory) {
+    const sorted = [...values].sort((a, b) => a - b);
+    medians[category] = sorted[Math.floor(sorted.length / 2)]!;
+  }
+  return medians;
+}
+
+async function spendingForProperties(
+  db: ReturnType<typeof serviceClient>,
+  propertyIds: string[],
+  periodMonths: number,
+): Promise<SpendingSummaryView> {
+  if (propertyIds.length === 0) {
+    return { periodMonths, totalCents: 0, jobCount: 0, byCategory: [] };
+  }
+  const { data } = await db
+    .from("work_orders")
+    .select(
+      "invoice_cents, invoiced_at, created_at, maintenance_requests!work_orders_request_id_fkey!inner(category, property_id)",
+    )
+    .not("invoice_cents", "is", null)
+    .in("maintenance_requests.property_id", propertyIds);
+  const jobs = ((data ?? []) as Array<{
+    invoice_cents: number;
+    invoiced_at: string | null;
+    created_at: string;
+    maintenance_requests: { category: string; property_id: string } | { category: string; property_id: string }[] | null;
+  }>)
+    .map((row) => {
+      const req = Array.isArray(row.maintenance_requests) ? row.maintenance_requests[0] : row.maintenance_requests;
+      if (!req) return null;
+      return {
+        category: req.category as RequestCategory,
+        invoiceCents: Number(row.invoice_cents),
+        invoicedAt: new Date(row.invoiced_at ?? row.created_at),
+        propertyId: req.property_id,
+      };
+    })
+    .filter((j): j is NonNullable<typeof j> => j !== null);
+  const summary = summariseSpending(jobs, {
+    periodMonths,
+    today: new Date(),
+    networkMediansCents: await categoryMedians(db),
+  });
+  return {
+    periodMonths: summary.periodMonths,
+    totalCents: summary.totalCents,
+    jobCount: summary.jobCount,
+    byCategory: summary.byCategory,
+  };
+}
+
+async function obligationsForProperties(
+  propertyIds: string[],
+  horizonDays: number,
+): Promise<ObligationsCalendarView> {
+  const today = new Date();
+  const details = (await Promise.all(propertyIds.map((id) => supabaseData.getProperty(id)))).filter(
+    (p): p is PropertyDetail => p !== null,
+  );
+  const calendar = buildObligationsCalendar(
+    details.map((p) => ({ propertyId: p.id, address: p.address, suburb: p.suburb, compliance: p.compliance })),
+    { horizonDays, today },
+  );
+  return {
+    horizonDays: calendar.horizonDays,
+    totalObligations: calendar.totalObligations,
+    months: calendar.months.map((m) => ({
+      month: m.month,
+      items: m.items.map((i) => ({
+        propertyAddress: `${i.address}, ${i.suburb}`,
+        requirementName: i.requirementName,
+        dueAt: i.dueAt.toISOString(),
+        daysUntilDue: i.daysUntilDue,
+        status: i.status,
+      })),
+    })),
+    batchable: calendar.batchable.map((b) => ({
+      requirementKey: b.requirementKey,
+      requirementName: b.requirementName,
+      suburb: b.suburb,
+      propertyAddresses: b.propertyAddresses,
+      windowStart: b.windowStart.toISOString(),
+      windowEnd: b.windowEnd.toISOString(),
+    })),
+  };
+}
+
+/** Which trade does a compliance requirement need? Routine categories only —
+ * a scheduled check is never an "urgent repair". */
+function complianceCategoryFor(requirementKey: string): RequestCategory {
+  if (requirementKey.includes("gas")) return "plumbing_general";
+  if (requirementKey.includes("electrical") || requirementKey.includes("rcd") || requirementKey.includes("smoke"))
+    return "electrical_general";
+  if (requirementKey.includes("pool")) return "garden_external";
+  return "other";
+}
+
+/** Proposed-slot info for the slot-confirm cards. */
+async function slotInfosForRequests(
+  db: ReturnType<typeof serviceClient>,
+  requestIds: string[],
+): Promise<CanvasSlotInfo[]> {
+  if (requestIds.length === 0) return [];
+  const { data } = await db
+    .from("work_orders")
+    .select("id, request_id, proposed_slots, contacts(full_name)")
+    .in("request_id", requestIds)
+    .not("proposed_slots", "is", null);
+  return ((data ?? []) as Array<{
+    id: string;
+    request_id: string;
+    proposed_slots: Array<{ startAt: string; endAt: string }> | null;
+    contacts: ContactJoin | ContactJoin[] | null;
+  }>)
+    .filter((w) => Array.isArray(w.proposed_slots) && w.proposed_slots.length > 0)
+    .map((w) => ({
+      requestId: w.request_id,
+      workOrderId: w.id,
+      tradieName: normalizeContact(w.contacts)?.full_name ?? "the tradie",
+      options: w.proposed_slots!.map((s) => ({
+        startAt: s.startAt,
+        endAt: s.endAt,
+        label: formatSlot({ startAt: new Date(s.startAt), endAt: new Date(s.endAt) }),
+      })),
+    }));
+}
+
+async function buildDataPackPayload(
+  db: ReturnType<typeof serviceClient>,
+  propertyId: string,
+  scopedIds: string[],
+): Promise<Record<string, unknown>> {
+  const property = await supabaseData.getProperty(propertyId);
+  if (!property) return {};
+  const today = new Date();
+  const medians = await categoryMedians(db);
+
+  const { data: assetRows } = await db
+    .from("property_assets")
+    .select("label, category, installed_at")
+    .eq("property_id", propertyId);
+  const assets = ((assetRows ?? []) as Array<{ label: string; category: string; installed_at: string | null }>).map(
+    (a) => {
+      const median = medians[a.category as RequestCategory];
+      const depreciation =
+        a.installed_at && median
+          ? estimateDepreciation({
+              category: a.category as RequestCategory,
+              installedAt: new Date(a.installed_at),
+              replacementCostCents: median,
+              today,
+            })
+          : null;
+      return { label: a.label, category: a.category, installedAt: a.installed_at, depreciation };
+    },
+  );
+
+  const { data: historyRows } = await db
+    .from("work_orders")
+    .select(
+      "invoice_cents, invoiced_at, contacts(full_name), maintenance_requests!work_orders_request_id_fkey!inner(title, category, property_id)",
+    )
+    .not("invoice_cents", "is", null)
+    .eq("maintenance_requests.property_id", propertyId);
+  const maintenanceHistory = ((historyRows ?? []) as unknown as Array<{
+    invoice_cents: number;
+    invoiced_at: string | null;
+    contacts: ContactJoin | ContactJoin[] | null;
+    maintenance_requests: { title: string; category: string } | { title: string; category: string }[] | null;
+  }>).map((row) => {
+    const req = Array.isArray(row.maintenance_requests) ? row.maintenance_requests[0] : row.maintenance_requests;
+    return {
+      title: req?.title ?? "",
+      category: req?.category ?? "other",
+      invoiceCents: Number(row.invoice_cents),
+      tradieName: normalizeContact(row.contacts)?.full_name ?? "Unknown",
+      invoicedAt: row.invoiced_at,
+    };
+  });
+
+  return {
+    // The honesty constraint (Product Design v6 §1.1), carried in the payload
+    // itself so every rendering of this pack states it.
+    disclaimer: "planning_estimate",
+    disclaimerText:
+      "Depreciation figures are planning estimates from a curated effective-life table. An ATO-defensible capital-works schedule requires a registered quantity surveyor. This pack is the verified data feed that makes that job trivial — it is not a tax schedule.",
+    property: { address: property.address, suburb: property.suburb },
+    generatedAt: today.toISOString(),
+    assets,
+    maintenanceHistory,
+    openWarranties: property.openWarranties,
+    compliance: {
+      overall: property.compliance.overall,
+      requirements: property.compliance.requirements.map((r) => ({
+        name: r.requirement.name,
+        status: r.status,
+        lastCompletedAt: r.lastCompletedAt?.toISOString() ?? null,
+        dueAt: r.dueAt?.toISOString() ?? null,
+      })),
+    },
+    spending: await spendingForProperties(db, scopedIds.includes(propertyId) ? [propertyId] : [propertyId], 12),
+  };
 }
 
 // Compile-time guard: request event names used above must stay in the

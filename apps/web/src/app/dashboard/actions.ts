@@ -18,3 +18,7 @@ export async function mintTradiePortalLinkAction(tradieContactId: string): Promi
 export async function mintTradieLeadIntakeLinkAction(tradieContactId: string): Promise<MintLinkResult> {
   return (await getData()).mintTradieLeadIntakeLink(tradieContactId);
 }
+
+export async function mintOwnerPortalLinkAction(ownerContactId: string): Promise<MintLinkResult> {
+  return (await getData()).mintOwnerPortalLink(ownerContactId);
+}

@@ -5,18 +5,22 @@ import { REQUEST_CATEGORIES } from "@1pacent/core";
  * every AI-proposal event's `ai_meta.promptVersion` so a Compliance Pack
  * can reconstruct exactly what Sally was told when she made a proposal.
  */
-export const SALLY_PROMPT_VERSION = "sally-v2";
+export const SALLY_PROMPT_VERSION = "sally-v3";
 
 /**
- * Sally operates in two modes on the same underlying agent (docs/PRODUCT_BRIEF_v3.md
- * §5.4.2 — the reconciliation of the tenant-intake marketplace flow and the
- * tradie-first AI receptionist vision): scoping a maintenance request for a
- * rental property, or capturing a lead for a tradie's own business. Same
- * guardrails, different framing and hand-off line.
+ * Sally is one agent, persona-scoped by the session token's position in the
+ * knowledge graph (Product Design v6 §3). Five modes on the same underlying
+ * agent: the original tenant-intake and tradie-lead-capture flows, plus the
+ * three durable seats (owner, PM, tradie) whose free-flow questions are
+ * answered exclusively through scoped tools over the ledger. Same
+ * guardrails, different framing, hand-off, and toolset.
  */
 export type SallyOperatingContext =
   | { mode: "tenant_intake"; propertyAddress: string; tenantFirstName?: string }
-  | { mode: "tradie_lead_capture"; tradieBusinessName: string; customerFirstName?: string };
+  | { mode: "tradie_lead_capture"; tradieBusinessName: string; customerFirstName?: string }
+  | { mode: "owner_portal"; ownerFirstName?: string; propertyAddresses: string[] }
+  | { mode: "pm_portfolio"; pmFirstName?: string; propertyCount: number }
+  | { mode: "tradie_portal"; tradieBusinessName: string };
 
 export interface SallyPromptContext {
   operating: SallyOperatingContext;
@@ -43,8 +47,64 @@ export interface SallyPromptContext {
  * product brief's "the call that answers everything" (docs/PRODUCT_BRIEF_v3.md §3).
  */
 export function buildSallySystemPrompt(context: SallyPromptContext): string {
-  const categories = REQUEST_CATEGORIES.join(", ");
   const { operating } = context;
+  if (
+    operating.mode === "owner_portal" ||
+    operating.mode === "pm_portfolio" ||
+    operating.mode === "tradie_portal"
+  ) {
+    return buildSeatPrompt(operating, context);
+  }
+  return buildIntakePrompt(operating, context);
+}
+
+/** The seat modes: free-flow questions answered ONLY through scoped tools
+ * over the ledger; decisions live on canvas cards, never in chat. */
+function buildSeatPrompt(
+  operating: Extract<SallyOperatingContext, { mode: "owner_portal" | "pm_portfolio" | "tradie_portal" }>,
+  context: SallyPromptContext,
+): string {
+  const identity =
+    operating.mode === "owner_portal"
+      ? `You are Sally, the property assistant for ${operating.ownerFirstName ?? "the owner"}'s ${operating.propertyAddresses.length === 1 ? `property at ${operating.propertyAddresses[0]}` : `${operating.propertyAddresses.length} properties (${operating.propertyAddresses.join("; ")})`}. You speak to the owner/landlord.`
+      : operating.mode === "pm_portfolio"
+        ? `You are Sally, the portfolio assistant for ${operating.pmFirstName ?? "the property manager"} — a portfolio of ${operating.propertyCount} managed properties.`
+        : `You are Sally, the business assistant for ${operating.tradieBusinessName}. You speak to the tradie who runs it.`;
+
+  const audience =
+    operating.mode === "owner_portal"
+      ? "Answer only about the owner's own properties: spending, asset horizons, compliance, open requests, reports."
+      : operating.mode === "pm_portfolio"
+        ? "Answer only about the managed portfolio: obligations, red-flag properties, batchable work, spending."
+        : "Answer only about this business: its jobs, schedule, quoting accuracy, trust standing.";
+
+  return [
+    identity,
+    "",
+    "How you answer — non-negotiable:",
+    "- Every factual answer (money, dates, compliance, assets, jobs) comes from a TOOL result. Call the tool, then narrate what it returned in plain, warm language.",
+    "- If the tools return nothing, say you don't have that on record. NEVER answer facts from memory or general knowledge, never estimate, never invent.",
+    "- The same data lands on the board beside this chat as a card — refer to it (\"I've put the details on your board\").",
+    "- Decisions are never made in chat: approvals, payments, dispatching work, confirming a time slot all happen as card taps by a human. You can point at the card; you never perform the action.",
+    audience,
+    "",
+    "Hard guardrails:",
+    "- Never give repair, safety, legal, tax, or compliance advice. Reports with dollar figures are planning estimates, not tax or legal documents — say so when relevant.",
+    "- Never invent a price, date, or ETA. Only state figures a tool returned.",
+    "- If asked about anything outside this seat's scope (other owners, other portfolios, other businesses), say you don't have access to that — because you genuinely don't.",
+    "",
+    "Keep replies short and human. One or two sentences of narration over a tool result beats a wall of numbers — the card carries the detail.",
+    context.memoryContext ? `\nKnown context from past conversations:\n${context.memoryContext}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildIntakePrompt(
+  operating: Extract<SallyOperatingContext, { mode: "tenant_intake" | "tradie_lead_capture" }>,
+  context: SallyPromptContext,
+): string {
+  const categories = REQUEST_CATEGORIES.join(", ");
 
   const identityLine =
     operating.mode === "tenant_intake"

@@ -1,5 +1,7 @@
 import type { RequestEvent } from "@1pacent/core";
 import { getData } from "@/lib/data";
+import { Canvas } from "@/components/canvas";
+import { TwinPanel } from "@/components/twin-panel";
 import { RequestTracker, type TrackerRequest, type TrackerStep } from "./request-tracker";
 import { SallyChat } from "./sally-chat";
 
@@ -57,18 +59,27 @@ export default async function TenantIntakePage({ params }: { params: Promise<{ t
     };
   });
 
+  const cards = await getData().then((d) => d.getCanvasCards(token));
+
   return (
-    <div className="mx-auto max-w-md">
+    <div className="mx-auto max-w-5xl">
       <p className="text-sm font-medium text-brand-700">Report a repair — no account needed</p>
       <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">
         {context.property.address}, {context.property.suburb}
       </h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
-        Chat with Sally below — urgent problems (no hot water, gas leaks, flooding) are fast-tracked
-        automatically under Victorian rental law.
+        Chat with Sally on the left — urgent problems (no hot water, gas leaks, flooding) are fast-tracked
+        automatically under Victorian rental law. Everything about your requests lands on the board.
       </p>
-      <SallyChat token={token} />
-      <RequestTracker token={token} requests={trackerRequests} />
+      <TwinPanel
+        talk={
+          <div>
+            <SallyChat token={token} />
+            <RequestTracker token={token} requests={trackerRequests} />
+          </div>
+        }
+        board={<Canvas cards={cards} token={token} scope="tenant" />}
+      />
     </div>
   );
 }

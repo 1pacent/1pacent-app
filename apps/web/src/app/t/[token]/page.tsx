@@ -1,5 +1,9 @@
 import { formatCents } from "@1pacent/core";
+import { Canvas } from "@/components/canvas";
+import { TalkPanel } from "@/components/talk-panel";
+import { TwinPanel } from "@/components/twin-panel";
 import { getData } from "@/lib/data";
+import { AutoQuoteForm } from "./auto-quote-form";
 import { JobsPanel, type JobsPanelJob } from "./jobs-panel";
 import { RateCardForm } from "./rate-card-form";
 
@@ -19,7 +23,12 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
     );
   }
 
-  const [leads, tradieJobs] = await Promise.all([data.listTradieLeads(token), data.listTradieJobs(token)]);
+  const [leads, tradieJobs, cards, autoQuote] = await Promise.all([
+    data.listTradieLeads(token),
+    data.listTradieJobs(token),
+    data.getCanvasCards(token),
+    data.getAutoQuoteSettings(token),
+  ]);
   const jobs: JobsPanelJob[] = tradieJobs.map((j) => ({
     workOrderId: j.workOrderId,
     category: j.category,
@@ -35,13 +44,24 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
   }));
 
   return (
-    <div className="mx-auto max-w-xl">
+    <div className="mx-auto max-w-6xl">
       <p className="text-sm font-medium text-brand-700">Your business</p>
       <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">Hi {context.tradieName}</h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
-        Sally answers your missed calls in your business&apos;s name, using your own rate card below — for
-        1Pacent jobs and for your own customers, from your own lead-intake link.
+        Ask Sally about your day, jobs or quoting accuracy on the left; the board keeps score. She also answers
+        your missed calls in your business&apos;s name, using your own rate card below.
       </p>
+
+      <div className="mb-10">
+        <TwinPanel
+          talk={<TalkPanel mode="tradie_portal" token={token} />}
+          board={<Canvas cards={cards} token={token} scope="tradie" />}
+        />
+      </div>
+
+      <div className="mb-8">
+        <AutoQuoteForm token={token} initial={autoQuote ?? { enabled: false, maxTotalCents: null }} />
+      </div>
 
       <div className="mb-8 rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-slate-900">My jobs</h2>

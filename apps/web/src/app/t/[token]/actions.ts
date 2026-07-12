@@ -45,6 +45,24 @@ export async function saveRateCard(token: string, formData: FormData): Promise<S
   return data.saveRateCard(token, { callOutFeeCents, hourlyRateCents, items });
 }
 
+/** Nelly's auto-quote opt-in (v6 §4.4): bounded, revocable, never silent. */
+export async function setAutoQuoteAction(
+  token: string,
+  enabled: boolean,
+  maxTotalDollars: string,
+): Promise<{ ok: boolean; error?: string }> {
+  let maxTotalCents: number | null = null;
+  const trimmed = maxTotalDollars.trim();
+  if (trimmed) {
+    try {
+      maxTotalCents = parseDollarsToCents(trimmed);
+    } catch {
+      return { ok: false, error: "Enter a valid dollar cap, or leave it blank for no cap." };
+    }
+  }
+  return (await getData()).setAutoQuote(token, { enabled, maxTotalCents });
+}
+
 export async function startJobAction(token: string, workOrderId: string) {
   return (await getData()).startJob(token, workOrderId);
 }

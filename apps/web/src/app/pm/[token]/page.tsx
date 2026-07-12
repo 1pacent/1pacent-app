@@ -1,4 +1,7 @@
 import { formatCents } from "@1pacent/core";
+import { Canvas } from "@/components/canvas";
+import { TalkPanel } from "@/components/talk-panel";
+import { TwinPanel } from "@/components/twin-panel";
 import { StateBadge, TrafficLightBadge } from "@/components/traffic-light";
 import { getData } from "@/lib/data";
 
@@ -13,7 +16,8 @@ export const dynamic = "force-dynamic";
  */
 export default async function PmPortfolioPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
-  const context = await (await getData()).getPmPortfolioContext(token);
+  const data = await getData();
+  const context = await data.getPmPortfolioContext(token);
 
   if (!context) {
     return (
@@ -24,37 +28,28 @@ export default async function PmPortfolioPage({ params }: { params: Promise<{ to
     );
   }
 
+  const cards = await data.getCanvasCards(token);
+
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-6xl">
       <p className="text-sm font-medium text-brand-700">Property manager portfolio</p>
       <h1 className="mt-1 font-serif text-2xl font-semibold text-slate-900">Hi {context.pmName}</h1>
       <p className="mt-2 mb-6 text-sm text-slate-600">
-        You&apos;re informed here as decisions happen — landlords approve their own maintenance spend
-        directly, so you don&apos;t need to triage every request yourself.
+        Ask Sally about the portfolio on the left; obligations, batchable work and the crew&apos;s progress land
+        on the board. Landlords approve their own spend — you only see what needs you.
       </p>
+
+      <div className="mb-10">
+        <TwinPanel
+          talk={<TalkPanel mode="pm_portfolio" token={token} />}
+          board={<Canvas cards={cards} token={token} scope="pm" />}
+        />
+      </div>
+
+      <h2 className="mb-4 font-serif text-lg font-semibold text-slate-900">Portfolio workspace</h2>
 
       {context.properties.length === 0 && (
         <p className="text-sm text-slate-500">No properties assigned to you yet.</p>
-      )}
-
-      {context.batchableCompliance.length > 0 && (
-        <div className="mb-8 rounded-xl border border-brand-200 bg-brand-50 p-5">
-          <h2 className="text-sm font-semibold text-brand-900">Batchable compliance</h2>
-          <p className="mt-1 text-xs text-brand-800">
-            These properties need the same check around the same time, in the same suburb — one tradie,
-            one route, instead of separate callouts for each.
-          </p>
-          <div className="mt-3 space-y-2">
-            {context.batchableCompliance.map((b, i) => (
-              <div key={i} className="rounded-lg bg-white px-3 py-2 text-sm">
-                <p className="font-medium text-slate-900">
-                  {b.requirementName} — {b.suburb}
-                </p>
-                <p className="text-xs text-slate-500">{b.propertyAddresses.join(" · ")}</p>
-              </div>
-            ))}
-          </div>
-        </div>
       )}
 
       <div className="space-y-6">

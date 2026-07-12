@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import {
+  mintOwnerPortalLinkAction,
   mintPmPortfolioLinkAction,
   mintTenantIntakeLinkAction,
   mintTradieLeadIntakeLinkAction,
@@ -12,6 +13,7 @@ export interface TestLinkTargetsProps {
   properties: Array<{ id: string; address: string }>;
   propertyManagers: Array<{ id: string; name: string }>;
   tradies: Array<{ id: string; name: string }>;
+  owners: Array<{ id: string; name: string }>;
 }
 
 type Minter = (id: string) => Promise<{ ok: true; path: string } | { ok: false; error: string }>;
@@ -71,7 +73,7 @@ function Row({ id, label, minter }: { id: string; label: string; minter: Minter 
   );
 }
 
-export function TestLinksPanel({ properties, propertyManagers, tradies }: TestLinkTargetsProps) {
+export function TestLinksPanel({ properties, propertyManagers, tradies, owners }: TestLinkTargetsProps) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5">
       <h2 className="text-sm font-semibold text-slate-900">Test as a persona</h2>
@@ -87,6 +89,14 @@ export function TestLinksPanel({ properties, propertyManagers, tradies }: TestLi
       {properties.length === 0 && <p className="mt-1 text-xs text-slate-400">No properties yet.</p>}
       {properties.map((p) => (
         <Row key={p.id} id={p.id} label={p.address} minter={mintTenantIntakeLinkAction} />
+      ))}
+
+      <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Landlord / owner — their own seat (Talk + board)
+      </p>
+      {owners.length === 0 && <p className="mt-1 text-xs text-slate-400">No owners yet.</p>}
+      {owners.map((o) => (
+        <Row key={o.id} id={o.id} label={o.name} minter={mintOwnerPortalLinkAction} />
       ))}
 
       <p className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-400">

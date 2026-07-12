@@ -284,6 +284,153 @@ export interface BatchableComplianceGroup {
   windowEnd: string;
 }
 
+/** Talk / See / Do (Developer Brief v6) — the canvas read model. Cards are
+ * deterministic projections of database state per token scope; NO table backs
+ * them, which is why the canvas keeps working with the AI off. */
+
+export type CanvasCardKind =
+  | "ticket_status"
+  | "approval"
+  | "warranty_catch"
+  | "slot_confirm"
+  | "confirm_fixed"
+  | "obligations"
+  | "batch_offer"
+  | "report"
+  | "insight"
+  | "crew_activity";
+
+export type CanvasCardState = "needs_you" | "live" | "done" | "info";
+
+export interface RankedQuoteOption {
+  quoteId: string;
+  tradieName: string;
+  totalCents: number;
+  trustScore: number;
+  recommended: boolean;
+}
+
+export interface SlotOption {
+  startAt: string;
+  endAt: string;
+  label: string;
+}
+
+export type CanvasCardData =
+  | { kind: "ticket_status"; requestId: string; state: RequestState; category: RequestCategory; isWarrantyClaim: boolean }
+  | { kind: "approval"; requestId: string; estimateCents: number | null; quotes: RankedQuoteOption[] }
+  | { kind: "warranty_catch"; requestId: string; tradieName: string; savedApproxCents: number | null }
+  | { kind: "slot_confirm"; requestId: string; workOrderId: string; tradieName: string; options: SlotOption[] }
+  | { kind: "confirm_fixed"; requestId: string }
+  | { kind: "obligations"; totalObligations: number; months: Array<{ month: string; count: number; lines: string[] }> }
+  | { kind: "batch_offer"; requirementKey: string; requirementName: string; suburb: string; propertyAddresses: string[]; windowStart: string; windowEnd: string }
+  | { kind: "report"; reportId: string; reportKind: ReportKind }
+  | { kind: "insight"; insightKind: "spending" | "asset_horizon" | "accuracy" | "day" | "red_list" | "compliance"; lines: string[] }
+  | { kind: "crew_activity"; lines: string[] };
+
+export interface CanvasCard {
+  id: string;
+  kind: CanvasCardKind;
+  title: string;
+  body: string;
+  /** ISO timestamp the card's underlying state last changed. */
+  at: string;
+  state: CanvasCardState;
+  data: CanvasCardData;
+  workspaceHref: string;
+}
+
+/** Reports & analytics (v6 §4) */
+
+export type ReportKind =
+  | "property_data_pack"
+  | "spending_summary"
+  | "obligations_calendar"
+  | "pm_quarterly"
+  | "compliance_pack"
+  | "accuracy_report";
+
+export interface SpendingSummaryView {
+  periodMonths: number;
+  totalCents: number;
+  jobCount: number;
+  byCategory: Array<{
+    category: RequestCategory;
+    totalCents: number;
+    jobCount: number;
+    networkMedianCents: number | null;
+    vsMedianPct: number | null;
+  }>;
+}
+
+export interface AssetHorizonView {
+  propertyAddress: string;
+  assetLabel: string;
+  category: RequestCategory;
+  ageYears: number;
+  effectiveLifeYears: number;
+  remainingLifeYears: number;
+  status: "healthy" | "plan_soon" | "due_now";
+  /** Median replacement cost from comparables, when known. */
+  plannedReplacementCents: number | null;
+  disclaimer: "planning_estimate";
+}
+
+export interface ObligationsCalendarView {
+  horizonDays: number;
+  totalObligations: number;
+  months: Array<{
+    month: string;
+    items: Array<{
+      propertyAddress: string;
+      requirementName: string;
+      dueAt: string;
+      daysUntilDue: number;
+      status: "amber" | "red";
+    }>;
+  }>;
+  batchable: BatchableComplianceGroup[];
+}
+
+export interface GeneratedReportView {
+  id: string;
+  kind: ReportKind;
+  createdAt: string;
+  payload: Record<string, unknown>;
+}
+
+/** Owner seat (v6 §4.2) — the landlord's own tokenised graph position. */
+export interface OwnerPortalContext {
+  ownerContactId: string;
+  ownerName: string;
+  properties: PropertyDetail[];
+}
+
+/** Tradie accuracy (v6 §4.4) — estimate-vs-actual and its trust effect. */
+export interface TradieAccuracyView {
+  completedJobs: number;
+  avgAbsVariancePct: number | null;
+  trustScore: number;
+  recentJobs: Array<{ requestTitle: string; quoteCents: number; invoiceCents: number; variancePct: number }>;
+}
+
+/** Compliance status narrow view — tenant mode gets status only, no cost fields. */
+export interface ComplianceStatusView {
+  propertyAddress: string;
+  overall: "green" | "amber" | "red";
+  requirements: Array<{
+    name: string;
+    status: "green" | "amber" | "red";
+    lastCompletedAt: string | null;
+    dueAt: string | null;
+  }>;
+}
+
+export interface AutoQuoteSettingsView {
+  enabled: boolean;
+  maxTotalCents: number | null;
+}
+
 export interface DataSource {
   listProperties(): Promise<PropertySummary[]>;
   getProperty(id: string): Promise<PropertyDetail | null>;
@@ -392,6 +539,55 @@ export interface DataSource {
     propertyId: string,
     rules: ApprovalPolicyRuleInput[],
   ): Promise<{ ok: boolean; error?: string }>;
+
+  // ——— Talk / See / Do (Developer Brief v6) ———
+
+  /** THE central v6 read model: deterministic cards per token scope.
+   * Accepts tenant_intake, owner_portal, pm_portfolio and tradie_portal tokens. */
+  getCanvasCards(token: string): Promise<CanvasCard[]>;
+
+  // Reports & analytics (owner_portal or pm_portfolio scope)
+  getSpendingSummary(scopeToken: string, periodMonths: number): Promise<SpendingSummaryView | null>;
+  getAssetHorizon(scopeToken: string): Promise<AssetHorizonView[]>;
+  getObligationsCalendar(scopeToken: string, horizonDays: number): Promise<ObligationsCalendarView | null>;
+  generateReport(
+    scopeToken: string,
+    kind: ReportKind,
+    subjectId?: string,
+  ): Promise<{ ok: boolean; reportId?: string; error?: string }>;
+  getReport(scopeToken: string, reportId: string): Promise<GeneratedReportView | null>;
+
+  /** Compliance narrow view — works for tenant_intake (status only by design),
+   * owner_portal and pm_portfolio scopes. */
+  getComplianceStatus(scopeToken: string): Promise<ComplianceStatusView[]>;
+
+  // Owner seat
+  getOwnerPortalContext(token: string): Promise<OwnerPortalContext | null>;
+  mintOwnerPortalLink(ownerContactId: string): Promise<MintLinkResult>;
+
+  // George's slot confirmation — a card action with a human actor, never a tool.
+  confirmSlot(
+    token: string,
+    workOrderId: string,
+    slotIndex: number,
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  // PM batch dispatch (v5 §3.1): compliance batch -> approval by the PM (human)
+  // -> quote round per property; certificates file on job completion.
+  dispatchComplianceBatch(
+    pmPortfolioToken: string,
+    input: { requirementKey: string; suburb: string },
+  ): Promise<{ ok: boolean; dispatched?: number; error?: string }>;
+
+  // Tradie auto-quote (Nelly) — opt-in, bounded, revocable
+  getAutoQuoteSettings(tradiePortalToken: string): Promise<AutoQuoteSettingsView | null>;
+  setAutoQuote(
+    tradiePortalToken: string,
+    input: { enabled: boolean; maxTotalCents: number | null },
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  // Tradie accuracy (feeds the Accuracy card and the get_my_accuracy tool)
+  getTradieAccuracy(tradiePortalToken: string): Promise<TradieAccuracyView | null>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };
@@ -400,4 +596,5 @@ export interface TestLinkTargets {
   properties: Array<{ id: string; address: string }>;
   propertyManagers: Array<{ id: string; name: string }>;
   tradies: Array<{ id: string; name: string }>;
+  owners: Array<{ id: string; name: string }>;
 }

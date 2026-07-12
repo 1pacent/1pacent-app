@@ -15,3 +15,7 @@ export * from "./trust/scoring";
 export * from "./pricing/estimate";
 export * from "./quotes/ranking";
 export * from "./scheduling/score";
+export * from "./scheduling/slots";
+export * from "./depreciation/estimate";
+export * from "./reports/spending";
+export * from "./reports/obligations";
