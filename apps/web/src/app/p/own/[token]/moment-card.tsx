@@ -24,12 +24,12 @@ export function MomentCard({ card, token }: { card: CanvasCard; token: string })
   }
 
   return (
-    <div className="hivis-ping-in rounded-2xl border border-[--color-hivis-400]/50 bg-[--color-field-900] p-4">
+    <div className="hivis-ping-in rounded-2xl border border-hivis-400/50 bg-field-900 p-4">
       <p className="font-bold text-white">{card.title}</p>
       <p className="mt-1 text-xs text-white/50">{card.body}</p>
 
       {done ? (
-        <p className="mt-3 rounded-xl bg-[--color-mint-400]/15 px-3 py-2 text-center text-sm font-bold text-[--color-mint-300]">
+        <p className="mt-3 rounded-xl bg-mint-400/15 px-3 py-2 text-center text-sm font-bold text-mint-300">
           {done} ✓
         </p>
       ) : (
@@ -47,8 +47,8 @@ export function MomentCard({ card, token }: { card: CanvasCard; token: string })
                   }}
                   className={
                     d === "approve"
-                      ? "flex-1 rounded-xl bg-[--color-hivis-400] px-4 py-2.5 text-sm font-bold text-[--color-field-950] active:scale-[0.97]"
-                      : "flex-1 rounded-xl border border-[--color-field-line] px-4 py-2.5 text-sm font-semibold text-white/60 active:scale-[0.97]"
+                      ? "flex-1 rounded-xl bg-hivis-400 px-4 py-2.5 text-sm font-bold text-field-950 active:scale-[0.97]"
+                      : "flex-1 rounded-xl border border-field-line px-4 py-2.5 text-sm font-semibold text-white/60 active:scale-[0.97]"
                   }
                 >
                   {d === "approve" ? "Approve" : "Decline"}
@@ -68,8 +68,8 @@ export function MomentCard({ card, token }: { card: CanvasCard; token: string })
                 }}
                 className={`flex items-center justify-between rounded-xl border px-4 py-2.5 text-sm active:scale-[0.97] ${
                   q.recommended
-                    ? "border-[--color-hivis-400] bg-[--color-hivis-400]/10 font-bold text-[--color-hivis-400]"
-                    : "border-[--color-field-line] text-white/70"
+                    ? "border-hivis-400 bg-hivis-400/10 font-bold text-hivis-400"
+                    : "border-field-line text-white/70"
                 }`}
               >
                 <span>
@@ -88,7 +88,7 @@ export function MomentCard({ card, token }: { card: CanvasCard; token: string })
                   type="button"
                   disabled={pending}
                   onClick={() => run(`Locked in ${opt.label}`, () => confirmSlotAction(token, woId, i))}
-                  className="rounded-xl border border-[--color-hivis-400]/60 px-4 py-2.5 text-sm font-semibold text-[--color-hivis-400] active:scale-[0.97]"
+                  className="rounded-xl border border-hivis-400/60 px-4 py-2.5 text-sm font-semibold text-hivis-400 active:scale-[0.97]"
                 >
                   {opt.label}
                 </button>

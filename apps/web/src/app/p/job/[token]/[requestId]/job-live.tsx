@@ -67,7 +67,7 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
           <p className="mt-2 text-center text-sm font-semibold text-white/80">📅 {job.slot.label}</p>
         )}
         {job.onTheWayAt && job.arcStep === "on_the_way" && (
-          <p className="mt-1 text-center text-xs text-[--color-mint-300]">
+          <p className="mt-1 text-center text-xs text-mint-300">
             On the way since {new Date(job.onTheWayAt).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}
           </p>
         )}
@@ -78,9 +78,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
         {job.parties.map((p) => (
           <div
             key={`${p.role}-${p.name}`}
-            className="flex min-w-[96px] flex-col items-center gap-1 rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-3 py-2.5"
+            className="flex min-w-[96px] flex-col items-center gap-1 rounded-2xl border border-field-line bg-field-900 px-3 py-2.5"
           >
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[--color-field-700] text-sm font-bold text-white/80">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-field-700 text-sm font-bold text-white/80">
               {p.name.split(" ").map((w) => w[0]).join("").slice(0, 2)}
             </span>
             <span className="text-[11px] font-semibold text-white/80">{p.name.split(" ")[0]}</span>
@@ -100,7 +100,7 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
             <p className="mt-0.5 text-sm text-white/70">{job.money.label}</p>
           </div>
           {job.money.visible && (
-            <p className="text-xl font-extrabold text-[--color-hivis-400]">
+            <p className="text-xl font-extrabold text-hivis-400">
               {job.money.payoutCents !== null
                 ? dollars(job.money.payoutCents)
                 : job.money.amountCents !== null
@@ -122,9 +122,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
               <div key={i} className="min-w-[88px]">
                 {e.dataUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={e.dataUrl} alt={e.gate} className="h-20 w-24 rounded-xl border border-[--color-field-line] object-cover" />
+                  <img src={e.dataUrl} alt={e.gate} className="h-20 w-24 rounded-xl border border-field-line object-cover" />
                 ) : (
-                  <div className="flex h-20 w-24 items-center justify-center rounded-xl border border-[--color-field-line] bg-[--color-field-900] text-2xl">
+                  <div className="flex h-20 w-24 items-center justify-center rounded-xl border border-field-line bg-field-900 text-2xl">
                     📄
                   </div>
                 )}
@@ -186,7 +186,7 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                         setGateForCamera(gate);
                         fileRef.current?.click();
                       }}
-                      className="flex-1 rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-3 py-3 text-sm font-semibold text-white/80 active:scale-[0.97]"
+                      className="flex-1 rounded-2xl border border-field-line bg-field-900 px-3 py-3 text-sm font-semibold text-white/80 active:scale-[0.97]"
                     >
                       📷 {gate.replace(/_/g, " ")}
                     </button>
@@ -209,7 +209,7 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
               </p>
             )}
             {job.arcStep === "paid" && (
-              <p className="rounded-2xl bg-[--color-mint-400]/15 px-4 py-3 text-center text-sm font-bold text-[--color-mint-300]">
+              <p className="rounded-2xl bg-mint-400/15 px-4 py-3 text-center text-sm font-bold text-mint-300">
                 💸 Paid out — same day. Nice work.
               </p>
             )}
@@ -222,7 +222,7 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
           </HiVisButton>
         )}
         {job.viewer !== "tradie" && job.arcStep === "paid" && (
-          <p className="rounded-2xl bg-[--color-mint-400]/15 px-4 py-3 text-center text-sm font-bold text-[--color-mint-300]">
+          <p className="rounded-2xl bg-mint-400/15 px-4 py-3 text-center text-sm font-bold text-mint-300">
             All done — written to the address record forever.
           </p>
         )}

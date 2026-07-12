@@ -7,12 +7,12 @@ export const dynamic = "force-dynamic";
 
 const STEP_COLORS: Record<string, string> = {
   booked: "bg-white/20",
-  confirmed: "bg-[--color-mint-400]/50",
-  on_the_way: "bg-[--color-hivis-400]",
-  on_site: "bg-[--color-hivis-400]",
-  done: "bg-[--color-mint-400]",
-  verified: "bg-[--color-mint-400]",
-  paid: "bg-[--color-mint-400]",
+  confirmed: "bg-mint-400/50",
+  on_the_way: "bg-hivis-400",
+  on_site: "bg-hivis-400",
+  done: "bg-mint-400",
+  verified: "bg-mint-400",
+  paid: "bg-mint-400",
 };
 
 /** The Dispatch Deck (Product Strategy v8 §3): every job a live tile;
@@ -53,19 +53,19 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
 
         {needsYou.length > 0 && (
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[--color-hivis-400]">Needs you</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-hivis-400">Needs you</p>
             <div className="flex flex-col gap-2">
               {needsYou.map((t) => (
                 <Link
                   key={t.requestId}
                   href={`/p/job/${token}/${t.requestId}`}
-                  className="hivis-ping-in flex items-center justify-between rounded-2xl border border-[--color-hivis-400]/60 bg-[--color-field-900] px-4 py-3 active:scale-[0.98]"
+                  className="hivis-ping-in flex items-center justify-between rounded-2xl border border-hivis-400/60 bg-field-900 px-4 py-3 active:scale-[0.98]"
                 >
                   <div>
                     <p className="text-sm font-bold text-white">{t.title}</p>
                     <p className="text-xs text-white/40">{t.address}</p>
                   </div>
-                  <span className="text-xs font-semibold text-[--color-hivis-400]">{t.state.replace(/_/g, " ")} →</span>
+                  <span className="text-xs font-semibold text-hivis-400">{t.state.replace(/_/g, " ")} →</span>
                 </Link>
               ))}
             </div>
@@ -84,12 +84,12 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
                 <Link
                   key={t.requestId}
                   href={`/p/job/${token}/${t.requestId}`}
-                  className="rounded-2xl border border-[--color-field-line] bg-[--color-field-900] p-3 active:scale-[0.98]"
+                  className="rounded-2xl border border-field-line bg-field-900 p-3 active:scale-[0.98]"
                 >
                   <span className={`mb-2 block h-1.5 w-8 rounded ${STEP_COLORS[t.arcStep] ?? "bg-white/20"}`} />
                   <p className="text-xs font-bold leading-tight text-white">{t.title}</p>
                   <p className="mt-0.5 text-[10px] text-white/40">{t.address}</p>
-                  <p className="mt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[--color-mint-300]">
+                  <p className="mt-1.5 text-[10px] font-semibold uppercase tracking-wide text-mint-300">
                     {t.arcStep.replace(/_/g, " ")}
                   </p>
                 </Link>
@@ -109,7 +109,7 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
                   className="flex items-center justify-between px-1 text-xs text-white/40"
                 >
                   <span>{t.title} — {t.address}</span>
-                  <span className="text-[--color-mint-300]">✓</span>
+                  <span className="text-mint-300">✓</span>
                 </Link>
               ))}
             </div>

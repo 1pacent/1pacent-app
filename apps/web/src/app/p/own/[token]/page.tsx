@@ -50,7 +50,7 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
 
         {/* Moments — decisions come to you. */}
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[--color-hivis-400]">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-hivis-400">
             {moments.length === 0 ? "Nothing needs you" : `${moments.length} decision${moments.length === 1 ? "" : "s"} waiting`}
           </p>
           {moments.length === 0 ? (
@@ -77,13 +77,13 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
                 <Link
                   key={r.id}
                   href={`/p/job/${token}/${r.id}`}
-                  className="flex items-center justify-between rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-4 py-3 active:scale-[0.98]"
+                  className="flex items-center justify-between rounded-2xl border border-field-line bg-field-900 px-4 py-3 active:scale-[0.98]"
                 >
                   <div>
                     <p className="text-sm font-semibold text-white">{r.title}</p>
                     <p className="text-xs text-white/40">{r.address}</p>
                   </div>
-                  <span className="text-xs font-semibold text-[--color-mint-300]">{r.state.replace(/_/g, " ")} →</span>
+                  <span className="text-xs font-semibold text-mint-300">{r.state.replace(/_/g, " ")} →</span>
                 </Link>
               ))}
             </div>
@@ -98,7 +98,7 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
               <Link
                 key={p.id}
                 href={`/p/record/${token}?property=${p.id}`}
-                className="flex items-center justify-between rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-4 py-3 active:scale-[0.98]"
+                className="flex items-center justify-between rounded-2xl border border-field-line bg-field-900 px-4 py-3 active:scale-[0.98]"
               >
                 <div>
                   <p className="text-sm font-semibold text-white">{p.address}</p>
@@ -107,7 +107,7 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
                 <span
                   className={`h-3 w-3 rounded-full ${
                     p.compliance.overall === "green"
-                      ? "bg-[--color-mint-400]"
+                      ? "bg-mint-400"
                       : p.compliance.overall === "amber"
                         ? "bg-amber-400"
                         : "bg-red-500"
@@ -120,7 +120,7 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
 
         <Link
           href={`/p/fix/${token}`}
-          className="hivis-breathe mt-auto rounded-2xl bg-[--color-hivis-400] px-6 py-4 text-center text-lg font-bold text-[--color-field-950] active:scale-[0.98]"
+          className="hivis-breathe mt-auto rounded-2xl bg-hivis-400 px-6 py-4 text-center text-lg font-bold text-field-950 active:scale-[0.98]"
         >
           🛠 Something needs fixing
         </Link>

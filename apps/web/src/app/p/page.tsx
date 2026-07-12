@@ -25,7 +25,7 @@ export default function PulseHome() {
         <h1 className="font-serif text-4xl font-semibold leading-tight">
           Press the button.
           <br />
-          <span className="text-[--color-hivis-400]">The job runs itself.</span>
+          <span className="text-hivis-400">The job runs itself.</span>
         </h1>
         <p className="mt-3 text-sm text-white/50">
           Verified tradies · upfront prices · live tracking · paid same day — while the address remembers
@@ -40,12 +40,12 @@ export default function PulseHome() {
             href={`/p/enter?as=${seat.as}`}
             className={
               seat.accent
-                ? "hivis-breathe rounded-2xl bg-[--color-hivis-400] p-5 text-[--color-field-950] transition active:scale-[0.98]"
-                : "rounded-2xl border border-[--color-field-line] bg-[--color-field-900] p-5 transition active:scale-[0.98]"
+                ? "hivis-breathe rounded-2xl bg-hivis-400 p-5 text-field-950 transition active:scale-[0.98]"
+                : "rounded-2xl border border-field-line bg-field-900 p-5 transition active:scale-[0.98]"
             }
           >
             <p className={`text-lg font-bold ${seat.accent ? "" : "text-white"}`}>{seat.title}</p>
-            <p className={`mt-1 text-sm ${seat.accent ? "text-[--color-field-950]/70" : "text-white/50"}`}>
+            <p className={`mt-1 text-sm ${seat.accent ? "text-field-950/70" : "text-white/50"}`}>
               {seat.body}
             </p>
           </Link>

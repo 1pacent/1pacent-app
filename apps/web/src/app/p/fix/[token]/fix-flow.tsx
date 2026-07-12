@@ -126,7 +126,7 @@ export function FixFlow({
           <button
             type="button"
             onClick={() => setPhase("describe")}
-            className="hivis-breathe flex h-56 w-56 flex-col items-center justify-center gap-2 rounded-full bg-[--color-hivis-400] text-[--color-field-950] shadow-2xl transition active:scale-95"
+            className="hivis-breathe flex h-56 w-56 flex-col items-center justify-center gap-2 rounded-full bg-hivis-400 text-field-950 shadow-2xl transition active:scale-95"
           >
             <span className="text-4xl">🛠</span>
             <span className="px-8 text-center text-xl font-extrabold leading-tight">
@@ -145,10 +145,10 @@ export function FixFlow({
                 <Link
                   key={j.id}
                   href={`/p/job/${token}/${j.id}`}
-                  className="flex items-center justify-between rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-4 py-3 active:scale-[0.98]"
+                  className="flex items-center justify-between rounded-2xl border border-field-line bg-field-900 px-4 py-3 active:scale-[0.98]"
                 >
                   <span className="text-sm font-semibold text-white">{j.title}</span>
-                  <span className="text-xs text-[--color-mint-300]">{j.state.replace(/_/g, " ")} →</span>
+                  <span className="text-xs text-mint-300">{j.state.replace(/_/g, " ")} →</span>
                 </Link>
               ))}
             </div>
@@ -172,7 +172,7 @@ export function FixFlow({
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
-          className="flex h-36 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-[--color-field-line] bg-[--color-field-900] active:scale-[0.99]"
+          className="flex h-36 items-center justify-center overflow-hidden rounded-2xl border border-dashed border-field-line bg-field-900 active:scale-[0.99]"
         >
           {photo ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -188,12 +188,12 @@ export function FixFlow({
             onChange={(e) => setDescription(e.target.value)}
             placeholder="…or say it / type it"
             rows={2}
-            className="flex-1 rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-4 py-3 text-sm text-white placeholder:text-white/30"
+            className="flex-1 rounded-2xl border border-field-line bg-field-900 px-4 py-3 text-sm text-white placeholder:text-white/30"
           />
           <button
             type="button"
             onClick={holdToTalk}
-            className={`w-14 rounded-2xl border text-xl ${listening ? "border-[--color-hivis-400] text-[--color-hivis-400]" : "border-[--color-field-line] text-white/60"}`}
+            className={`w-14 rounded-2xl border text-xl ${listening ? "border-hivis-400 text-hivis-400" : "border-field-line text-white/60"}`}
           >
             {listening ? "…" : "🎙"}
           </button>
@@ -222,7 +222,7 @@ export function FixFlow({
               type="button"
               disabled={pending}
               onClick={() => runTriage(q.category)}
-              className="rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-3 py-3 text-sm font-semibold text-white/80 active:scale-[0.97]"
+              className="rounded-2xl border border-field-line bg-field-900 px-3 py-3 text-sm font-semibold text-white/80 active:scale-[0.97]"
             >
               {q.label}
             </button>
@@ -249,10 +249,10 @@ export function FixFlow({
           {result.triage?.description && (
             <p className="mt-1 text-sm text-white/60">{result.triage.description}</p>
           )}
-          <div className="mt-4 border-t border-[--color-field-line] pt-4">
+          <div className="mt-4 border-t border-field-line pt-4">
             {p.pricing === "fixed_band" && p.bandLowCents && p.bandHighCents && p.bookAmountCents ? (
               <>
-                <p className="text-3xl font-extrabold text-[--color-hivis-400]">
+                <p className="text-3xl font-extrabold text-hivis-400">
                   {dollars(p.bookAmountCents)}
                   <span className="ml-2 align-middle text-xs font-medium text-white/40">
                     fixed · band {dollars(p.bandLowCents)}–{dollars(p.bandHighCents)}
@@ -288,8 +288,8 @@ export function FixFlow({
                   onClick={() => setSlotIndex(i)}
                   className={`rounded-2xl border px-4 py-3 text-left text-sm font-semibold active:scale-[0.98] ${
                     i === slotIndex
-                      ? "border-[--color-hivis-400] bg-[--color-hivis-400]/10 text-[--color-hivis-400]"
-                      : "border-[--color-field-line] bg-[--color-field-900] text-white/70"
+                      ? "border-hivis-400 bg-hivis-400/10 text-hivis-400"
+                      : "border-field-line bg-field-900 text-white/70"
                   }`}
                 >
                   {s.label}
@@ -318,7 +318,7 @@ export function FixFlow({
   // booked
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center hivis-ping-in">
-      <span className="flex h-20 w-20 items-center justify-center rounded-full bg-[--color-mint-400] text-4xl">✓</span>
+      <span className="flex h-20 w-20 items-center justify-center rounded-full bg-mint-400 text-4xl">✓</span>
       <h1 className="font-serif text-2xl font-semibold">Booked.</h1>
       <p className="max-w-[260px] text-sm text-white/50">
         {booked?.offered

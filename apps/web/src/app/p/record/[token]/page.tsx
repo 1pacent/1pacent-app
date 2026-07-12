@@ -56,7 +56,7 @@ export default async function RecordPage({
                   {r.dueAt ? `due ${new Date(r.dueAt).toLocaleDateString("en-AU", { month: "short", year: "numeric" })}` : "—"}
                   <span
                     className={`h-2.5 w-2.5 rounded-full ${
-                      r.status === "green" ? "bg-[--color-mint-400]" : r.status === "amber" ? "bg-amber-400" : "bg-red-500"
+                      r.status === "green" ? "bg-mint-400" : r.status === "amber" ? "bg-amber-400" : "bg-red-500"
                     }`}
                   />
                 </span>

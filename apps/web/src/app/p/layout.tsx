@@ -12,7 +12,7 @@ export const metadata: Metadata = {
  */
 export default function PulseLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-dvh bg-[--color-field-950] text-white" style={{ colorScheme: "dark" }}>
+    <div className="min-h-dvh bg-field-950 text-white" style={{ colorScheme: "dark" }}>
       <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-8">{children}</div>
     </div>
   );
