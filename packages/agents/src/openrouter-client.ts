@@ -4,9 +4,14 @@
  * matching the mocked-client testing convention used across the workspace.
  */
 
+export type MessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  /** Plain text, or multimodal parts (text + images) for vision-capable models. */
+  content: string | MessageContentPart[];
 }
 
 /** OpenAI function-calling tool definition (OpenRouter passes it through). */

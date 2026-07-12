@@ -1,32 +1,42 @@
 import "server-only";
 import {
+  arcStepFor,
   assertCents,
   assessAssetHorizon,
+  bookableAmountFromBand,
   buildObligationsCalendar,
+  checkPlaybookGate,
   computeBatchableCompliance,
   decideApproval,
   earliestSlotStart,
   estimateDepreciation,
+  estimatePriceBand,
   evaluateApprovalPolicy,
   evaluateProperty,
   findWarrantyMatch,
   formatSlot,
+  getPlaybook,
   hashToken,
   isUrgentCategory,
   issueToken,
+  playbookForCategory,
   projectState,
   proposeSlots,
   rankQuotes,
   scoreAvailability,
   scoreTrust,
+  splitPayment,
   summariseSpending,
   transition,
+  unsatisfiedGates,
   validateQuoteSubmission,
   validateToken,
   REQUEST_EVENTS,
   type ActorType,
   type ApprovalPolicyRule,
   type EvidenceRecord,
+  type EvidenceItem as PlaybookEvidenceItem,
+  type PaymentState,
   type RequestCategory,
   type RequestEvent,
   type RequestState,
@@ -43,12 +53,21 @@ import {
   type ReportListing,
   type WarrantyCatchInfo,
 } from "./canvas";
+import { projectJob, type JobSource } from "./job-projection";
 import type {
   AcceptQuoteResult,
+  AddressRecordView,
   ApprovalContext,
   ApprovalPolicyRuleInput,
   ApprovalPolicyRuleView,
   AssetHorizonView,
+  BookingPreview,
+  BookJobInput,
+  BookJobResult,
+  DeckTile,
+  JobOfferView,
+  JobProjection,
+  JobViewer,
   AutoQuoteSettingsView,
   CanvasCard,
   ComplianceStatusView,
@@ -2363,6 +2382,765 @@ export const supabaseData: DataSource = {
       recentJobs,
     };
   },
+
+  // ——— v8 R1: The Uber Slice ———
+
+  async previewBooking(token, input): Promise<BookingPreview | null> {
+    const db = serviceClient();
+    const propertyId = await bookablePropertyId(db, token, input.propertyId);
+    if (!propertyId) return null;
+    const { data: prop } = await db
+      .from("properties")
+      .select("id, address_line1, suburb, state, postcode")
+      .eq("id", propertyId)
+      .maybeSingle();
+    if (!prop) return null;
+    const playbook = (input.playbookKey ? getPlaybook(input.playbookKey) : null) ?? playbookForCategory(input.category);
+
+    let bandLow: number | null = null;
+    let bandHigh: number | null = null;
+    let bookAmount: number | null = null;
+    if (playbook.pricing.model === "fixed_band") {
+      const comparables = await supabaseData.getComparableJobs(propertyId, playbook.category);
+      const band = estimatePriceBand(playbook.category, comparables);
+      bandLow = band.lowCents;
+      bandHigh = band.highCents;
+      bookAmount = bookableAmountFromBand(band.lowCents, band.highCents);
+    }
+
+    const onlineIds = await onlineTradieIds(db);
+    const urgent = isUrgentCategory(playbook.category);
+    let windows: Array<{ dayOfWeek: number; startTime: string; endTime: string }> = [];
+    if (onlineIds.length > 0) {
+      const { data: w } = await db
+        .from("tradie_availability_windows")
+        .select("day_of_week, start_time, end_time")
+        .in("tradie_contact_id", onlineIds);
+      windows = ((w ?? []) as Array<{ day_of_week: number; start_time: string; end_time: string }>).map((x) => ({
+        dayOfWeek: x.day_of_week,
+        startTime: x.start_time,
+        endTime: x.end_time,
+      }));
+    }
+    const slots = proposeSlots(windows, { from: earliestSlotStart(new Date(), urgent), count: 3 });
+
+    return {
+      playbookKey: playbook.key,
+      playbookTitle: playbook.title,
+      category: playbook.category,
+      pricing: playbook.pricing.model,
+      bandLowCents: bandLow,
+      bandHighCents: bandHigh,
+      bookAmountCents: bookAmount,
+      evidenceGates: [...playbook.evidenceGates],
+      warrantyMonths: playbook.warrantyDefaultMonths,
+      urgent,
+      slots: slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString(), label: formatSlot(s) })),
+      tradiesOnline: onlineIds.length,
+      propertyId,
+      propertyAddress: `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}`,
+    };
+  },
+
+  async bookJob(token, input): Promise<BookJobResult> {
+    const db = serviceClient();
+    const propertyId = await bookablePropertyId(db, token, input.propertyId);
+    if (!propertyId) return { ok: false, error: "This link isn't active." };
+    const { data: prop } = await db.from("properties").select("id, org_id").eq("id", propertyId).maybeSingle();
+    if (!prop) return { ok: false, error: "Property not found." };
+    const playbook = getPlaybook(input.playbookKey) ?? playbookForCategory(input.category);
+    const urgent = isUrgentCategory(playbook.category);
+
+    const state = projectState([
+      { eventType: "triage", actorType: "system" },
+      { eventType: "auto_approve", actorType: "system" },
+    ]);
+    const { data: req, error: reqError } = await db
+      .from("maintenance_requests")
+      .insert({
+        org_id: prop.org_id,
+        property_id: propertyId,
+        title: input.title,
+        description: input.description,
+        category: playbook.category,
+        is_urgent: urgent,
+        status: state,
+        playbook_key: playbook.key,
+        booked_start_at: input.slot?.startAt ?? null,
+        booked_end_at: input.slot?.endAt ?? null,
+      })
+      .select("id")
+      .single();
+    if (reqError || !req) return { ok: false, error: reqError?.message ?? "Could not save the booking." };
+
+    const base = { org_id: prop.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
+    await db.from("events").insert([
+      {
+        ...base,
+        event_type: "triage",
+        actor_type: "system",
+        actor_id: "sally:triage",
+        ai_meta: input.aiMeta ?? null,
+        payload: { playbook: playbook.key },
+      },
+      {
+        ...base,
+        event_type: "auto_approve",
+        actor_type: "system",
+        actor_id: "playbook:booking",
+        payload: {
+          note: urgent
+            ? "Urgent bypass (VIC urgent repairs list)"
+            : `Fixed-process playbook "${playbook.key}" — payer authorized at booking`,
+        },
+      },
+    ]);
+
+    if (playbook.pricing.model !== "fixed_band") {
+      const dispatch = await supabaseData.dispatchQuotesForRequest(req.id as string);
+      return dispatch.ok
+        ? { ok: true, requestId: req.id as string, offered: dispatch.invites.length, amountAuthorizedCents: null }
+        : { ok: false, error: dispatch.error };
+    }
+
+    // Fixed band: authorize (simulated PSP hold — no custody) and offer.
+    const comparables = await supabaseData.getComparableJobs(propertyId, playbook.category);
+    const band = estimatePriceBand(playbook.category, comparables);
+    const amount = bookableAmountFromBand(band.lowCents, band.highCents);
+    const split = splitPayment(amount);
+    await db.from("payments").insert({
+      org_id: prop.org_id,
+      request_id: req.id,
+      status: "authorized",
+      amount_cents: amount,
+      platform_fee_cents: split.platformFeeCents,
+      psp: "simulated",
+    });
+
+    await db.from("events").insert({ ...base, event_type: "request_quotes", actor_type: "system", actor_id: "george:offer" });
+    await db.from("maintenance_requests").update({ status: "quoting" }).eq("id", req.id);
+
+    const onlineIds = (await onlineTradieIds(db)).slice(0, 3);
+    for (const tradieId of onlineIds) {
+      await db.from("quotes").insert({
+        org_id: prop.org_id,
+        request_id: req.id,
+        tradie_contact_id: tradieId,
+        status: "invited",
+        quote_cents: amount,
+        call_out_fee_cents: 0,
+        note: "Fixed-price offer — first accept wins.",
+      });
+    }
+    return { ok: true, requestId: req.id as string, offered: onlineIds.length, amountAuthorizedCents: amount };
+  },
+
+  async getOpenOffers(tradiePortalToken): Promise<JobOfferView[]> {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return [];
+    const db = serviceClient();
+    const { data } = await db
+      .from("quotes")
+      .select(
+        "id, quote_cents, maintenance_requests!quotes_request_id_fkey!inner(id, title, category, status, playbook_key, booked_start_at, booked_end_at, property_id, properties(address_line1, suburb, state, postcode))",
+      )
+      .eq("tradie_contact_id", resolved.contact_id)
+      .eq("status", "invited")
+      .eq("maintenance_requests.status", "quoting");
+    const rows = (data ?? []) as unknown as Array<{
+      id: string;
+      quote_cents: number | null;
+      maintenance_requests: {
+        id: string;
+        title: string;
+        category: string;
+        playbook_key: string | null;
+        booked_start_at: string | null;
+        booked_end_at: string | null;
+        property_id: string;
+        properties:
+          | { address_line1: string; suburb: string; state: string; postcode: string }
+          | { address_line1: string; suburb: string; state: string; postcode: string }[]
+          | null;
+      };
+    }>;
+    const offers: JobOfferView[] = [];
+    for (const row of rows) {
+      const req = row.maintenance_requests;
+      const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+      if (!playbook || playbook.pricing.model !== "fixed_band") continue;
+      const prop = Array.isArray(req.properties) ? req.properties[0] : req.properties;
+      const { data: assets } = await db
+        .from("property_assets")
+        .select("label, installed_at")
+        .eq("property_id", req.property_id);
+      offers.push({
+        quoteId: row.id,
+        requestId: req.id,
+        title: req.title,
+        playbookTitle: playbook.title,
+        propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+        payoutCents: row.quote_cents !== null ? splitPayment(Number(row.quote_cents)).tradiePayoutCents : null,
+        slot: req.booked_start_at
+          ? {
+              startAt: req.booked_start_at,
+              endAt: req.booked_end_at ?? req.booked_start_at,
+              label: formatSlot({
+                startAt: new Date(req.booked_start_at),
+                endAt: new Date(req.booked_end_at ?? req.booked_start_at),
+              }),
+            }
+          : null,
+        briefing: ((assets ?? []) as Array<{ label: string; installed_at: string | null }>).map(
+          (a) => `${a.label}${a.installed_at ? ` (installed ${new Date(a.installed_at).getFullYear()})` : ""}`,
+        ),
+        urgent: isUrgentCategory(req.category as RequestCategory),
+      });
+    }
+    return offers;
+  },
+
+  async acceptJobOffer(tradiePortalToken, quoteId) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: quote } = await db
+      .from("quotes")
+      .select("id, org_id, request_id, status, tradie_contact_id")
+      .eq("id", quoteId)
+      .maybeSingle();
+    if (!quote || quote.tradie_contact_id !== resolved.contact_id || quote.status !== "invited") {
+      return { ok: false, error: "That job's gone — another tradie got there first." };
+    }
+    const { data: reqRow } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status")
+      .eq("id", quote.request_id)
+      .maybeSingle();
+    if (!reqRow || (reqRow.status as RequestState) !== "quoting") {
+      return { ok: false, error: "That job's gone — another tradie got there first." };
+    }
+    // The tradie's tap — the human event on this side of the market.
+    const { data: claimed } = await db
+      .from("quotes")
+      .update({ status: "submitted", submitted_at: new Date().toISOString() })
+      .eq("id", quote.id)
+      .eq("status", "invited")
+      .select("id");
+    if (!claimed || claimed.length === 0) {
+      return { ok: false, error: "That job's gone — another tradie got there first." };
+    }
+    await db.from("events").insert({
+      org_id: quote.org_id,
+      aggregate_type: "quote",
+      aggregate_id: quote.id,
+      event_type: "offer_accepted",
+      actor_type: "tradie",
+      actor_id: `contact:${resolved.contact_id}`,
+    });
+    // Payer pre-authorized at booking; George settles the match deterministically.
+    const result = await acceptQuoteTx(db, reqRow, quote.id, "system", "george:dispatch");
+    if (!result.ok) return { ok: false, error: result.error };
+    return { ok: true, requestId: reqRow.id as string };
+  },
+
+  async setTradiePresence(tradiePortalToken, online) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, online: false };
+    const db = serviceClient();
+    const { data: contact } = await db.from("contacts").select("org_id").eq("id", resolved.contact_id).maybeSingle();
+    if (!contact) return { ok: false, online: false };
+    await db.from("tradie_presence").upsert({
+      tradie_contact_id: resolved.contact_id,
+      org_id: contact.org_id,
+      online,
+      updated_at: new Date().toISOString(),
+    });
+    return { ok: true, online };
+  },
+
+  async getTradiePresence(tradiePortalToken) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { online: false };
+    const db = serviceClient();
+    const { data } = await db
+      .from("tradie_presence")
+      .select("online")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .maybeSingle();
+    return { online: Boolean(data?.online) };
+  },
+
+  async markOnMyWay(tradiePortalToken, workOrderId) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    await db.from("work_orders").update({ on_the_way_at: new Date().toISOString() }).eq("id", wo.id);
+    return { ok: true };
+  },
+
+  async addJobEvidence(tradiePortalToken, workOrderId, input) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    await db.from("job_evidence").insert({
+      org_id: wo.org_id,
+      work_order_id: wo.id,
+      gate: input.gate,
+      data_url: input.dataUrl,
+      note: input.note ?? null,
+    });
+    const { data: reqRow } = await db
+      .from("maintenance_requests")
+      .select("playbook_key")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    const playbook = reqRow?.playbook_key ? getPlaybook(reqRow.playbook_key) : null;
+    const remaining = playbook ? unsatisfiedGates(playbook, await evidenceItemsFor(db, wo.id)) : [];
+    return { ok: true, gatesRemaining: remaining };
+  },
+
+  async completeJob(tradiePortalToken, workOrderId, note) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, status, playbook_key")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+
+    // Core rule, not UI hope: the playbook's gates block completion.
+    const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+    if (playbook) {
+      const gate = checkPlaybookGate(playbook, "submit_evidence", await evidenceItemsFor(db, wo.id));
+      if (!gate.ok) return { ok: false, gatesRemaining: gate.missing, error: gate.message };
+    }
+
+    const result = transition(req.status as RequestState, "submit_evidence", "tradie");
+    if (!result.ok) return { ok: false, error: `Cannot mark this done from state "${req.status}".` };
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "maintenance_request",
+      aggregate_id: req.id,
+      event_type: "submit_evidence",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+      payload: { note },
+    });
+    await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+    await db.from("work_orders").update({ status: result.state, completion_note: note }).eq("id", wo.id);
+    return { ok: true };
+  },
+
+  async verifyAndSettle(token, requestId) {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, status, playbook_key")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    if (row.scope === "tenant_intake") {
+      if (req.property_id !== row.aggregate_id) return { ok: false, error: "Request not found." };
+    } else {
+      const { data: prop } = await db
+        .from("properties")
+        .select("owner_contact_id")
+        .eq("id", req.property_id)
+        .maybeSingle();
+      if (prop?.owner_contact_id !== row.aggregate_id) return { ok: false, error: "Request not found." };
+    }
+
+    // The human verification — the audit point.
+    const actorType = row.scope === "tenant_intake" ? "tenant" : "agency_user";
+    const verifyResult = transition(req.status as RequestState, "verify", actorType as ActorType);
+    if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${req.status}".` };
+    const base = { org_id: req.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
+    await db.from("events").insert({
+      ...base,
+      event_type: "verify",
+      actor_type: actorType,
+      actor_id: `token:${row.id}`,
+    });
+    await db.from("maintenance_requests").update({ status: verifyResult.state }).eq("id", req.id);
+
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, quote_cents, call_out_fee_cents")
+      .eq("request_id", req.id)
+      .maybeSingle();
+    if (!wo) return { ok: true };
+    await db.from("work_orders").update({ status: verifyResult.state }).eq("id", wo.id);
+
+    // Settlement: capture + transfer (simulated PSP), the record write, the
+    // certificate if this was a compliance playbook — Penny's whole job.
+    const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+    const { data: payment } = await db
+      .from("payments")
+      .select("id, amount_cents, status")
+      .eq("request_id", req.id)
+      .maybeSingle();
+    const settleAmount = payment
+      ? Number(payment.amount_cents)
+      : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+
+    const invoiceResult = transition(verifyResult.state, "invoice", "system");
+    if (!invoiceResult.ok) return { ok: true };
+    await db.from("events").insert({
+      ...base,
+      event_type: "invoice",
+      actor_type: "system",
+      actor_id: "penny:capture",
+      payload: { note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}` },
+    });
+
+    let assetId: string | null = null;
+    if (playbook) {
+      const { data: existingAsset } = await db
+        .from("property_assets")
+        .select("id")
+        .eq("property_id", req.property_id)
+        .eq("category", playbook.category)
+        .eq("label", playbook.assetLabel)
+        .maybeSingle();
+      if (existingAsset) assetId = existingAsset.id;
+      else {
+        const { data: created } = await db
+          .from("property_assets")
+          .insert({ org_id: req.org_id, property_id: req.property_id, category: playbook.category, label: playbook.assetLabel })
+          .select("id")
+          .single();
+        assetId = created?.id ?? null;
+      }
+      if (playbook.compliance) {
+        await db.from("compliance_certificates").insert({
+          org_id: req.org_id,
+          property_id: req.property_id,
+          requirement_key: playbook.compliance.filesCertificate,
+          completed_at: new Date().toISOString().slice(0, 10),
+          uploaded_by: "system:playbook-completion",
+        });
+      }
+    }
+    await db
+      .from("work_orders")
+      .update({
+        invoice_cents: settleAmount,
+        invoiced_at: new Date().toISOString(),
+        asset_id: assetId,
+        warranty_expires_at:
+          playbook && playbook.warrantyDefaultMonths > 0
+            ? new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString()
+            : null,
+      })
+      .eq("id", wo.id);
+
+    if (payment) {
+      await db
+        .from("payments")
+        .update({ status: "transferred", work_order_id: wo.id, updated_at: new Date().toISOString() })
+        .eq("id", payment.id);
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "work_order",
+        aggregate_id: wo.id,
+        event_type: "payment_transferred",
+        actor_type: "system",
+        actor_id: "penny:psp",
+        payload: { amountCents: settleAmount, psp: "simulated" },
+      });
+    }
+
+    const paidResult = transition(invoiceResult.state, "record_payment", "system");
+    const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+    const trailing: Array<Record<string, unknown>> = [];
+    if (paidResult.ok) trailing.push({ ...base, event_type: "record_payment", actor_type: "system", actor_id: "penny:psp" });
+    if (closedResult?.ok) trailing.push({ ...base, event_type: "close", actor_type: "system", actor_id: "penny:psp" });
+    if (trailing.length > 0) await db.from("events").insert(trailing);
+    const finalState = closedResult?.ok ? closedResult.state : invoiceResult.state;
+    await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
+    await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
+    return { ok: true };
+  },
+
+  async getJobProjection(token, requestId): Promise<JobProjection | null> {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal", "pm_portfolio", "tradie_portal"]);
+    if (!row) return null;
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select(
+        "id, org_id, property_id, title, description, category, status, estimate_cents, warranty_claim_of_work_order_id, playbook_key, booked_start_at, booked_end_at",
+      )
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return null;
+
+    const { data: prop } = await db
+      .from("properties")
+      .select("address_line1, suburb, state, postcode, owner_contact_id, pm_contact_id")
+      .eq("id", req.property_id)
+      .maybeSingle();
+
+    let viewer: JobViewer;
+    if (row.scope === "tenant_intake") {
+      if (req.property_id !== row.aggregate_id) return null;
+      viewer = "occupant";
+    } else if (row.scope === "owner_portal") {
+      if (prop?.owner_contact_id !== row.aggregate_id) return null;
+      viewer = "payer";
+    } else if (row.scope === "pm_portfolio") {
+      if (prop?.pm_contact_id !== row.contact_id) return null;
+      viewer = "pm";
+    } else {
+      const { data: mine } = await db
+        .from("quotes")
+        .select("id")
+        .eq("request_id", req.id)
+        .eq("tradie_contact_id", row.contact_id)
+        .limit(1);
+      if (!mine || mine.length === 0) return null;
+      viewer = "tradie";
+    }
+
+    const [{ data: ev }, { data: wo }, { data: payment }] = await Promise.all([
+      db
+        .from("events")
+        .select("event_type, actor_type, payload, created_at")
+        .eq("aggregate_type", "maintenance_request")
+        .eq("aggregate_id", req.id)
+        .order("id", { ascending: true }),
+      db
+        .from("work_orders")
+        .select("id, tradie_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, contacts(full_name)")
+        .eq("request_id", req.id)
+        .maybeSingle(),
+      db.from("payments").select("status, amount_cents").eq("request_id", req.id).maybeSingle(),
+    ]);
+
+    const woRow = wo as {
+      id: string;
+      on_the_way_at: string | null;
+      scheduled_start_at: string | null;
+      scheduled_end_at: string | null;
+      completion_note: string | null;
+      contacts: ContactJoin | ContactJoin[] | null;
+    } | null;
+    let tradieName = normalizeContact(woRow?.contacts ?? null)?.full_name ?? null;
+    if (!tradieName) {
+      const { data: acceptedQuote } = await db
+        .from("quotes")
+        .select("contacts(full_name)")
+        .eq("request_id", req.id)
+        .eq("status", "accepted")
+        .maybeSingle();
+      tradieName = normalizeContact((acceptedQuote as { contacts: ContactJoin | ContactJoin[] | null } | null)?.contacts ?? null)?.full_name ?? null;
+    }
+
+    const [ownerName, pmName, occupantName] = await Promise.all([
+      prop?.owner_contact_id ? contactName(db, prop.owner_contact_id) : Promise.resolve(null),
+      prop?.pm_contact_id ? contactName(db, prop.pm_contact_id) : Promise.resolve(null),
+      (async () => {
+        const { data: t } = await db.from("contacts").select("full_name").eq("org_id", req.org_id).eq("kind", "tenant").limit(1);
+        return (t?.[0]?.full_name as string | undefined) ?? null;
+      })(),
+    ]);
+
+    let evidence: JobSource["evidence"] = [];
+    if (woRow) {
+      const { data: evRows } = await db
+        .from("job_evidence")
+        .select("gate, data_url, note, created_at")
+        .eq("work_order_id", woRow.id)
+        .order("created_at", { ascending: true });
+      evidence = ((evRows ?? []) as Array<{ gate: string; data_url: string | null; note: string | null; created_at: string }>).map(
+        (e) => ({ gate: e.gate, dataUrl: e.data_url, note: e.note, at: e.created_at }),
+      );
+    }
+
+    const source: JobSource = {
+      request: {
+        id: req.id,
+        title: req.title,
+        description: req.description,
+        category: req.category as RequestCategory,
+        estimateCents: req.estimate_cents,
+        state: req.status as RequestState,
+        isWarrantyClaim: Boolean(req.warranty_claim_of_work_order_id),
+        events: ((ev ?? []) as Array<{ event_type: string; actor_type: string; payload: Record<string, unknown> | null; created_at: string }>).map(
+          (e) => ({
+            eventType: e.event_type as RequestEvent,
+            actorType: e.actor_type as ActorType,
+            note: typeof e.payload?.note === "string" ? e.payload.note : undefined,
+            at: e.created_at,
+          }),
+        ),
+        playbookKey: req.playbook_key ?? null,
+        bookedSlot: req.booked_start_at
+          ? { startAt: req.booked_start_at, endAt: req.booked_end_at ?? req.booked_start_at }
+          : null,
+      },
+      propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+      workOrder: woRow
+        ? {
+            id: woRow.id,
+            onTheWayAt: woRow.on_the_way_at,
+            scheduledStartAt: woRow.scheduled_start_at,
+            scheduledEndAt: woRow.scheduled_end_at,
+            completionNote: woRow.completion_note,
+          }
+        : null,
+      tradie: tradieName ? { name: tradieName, verified: true } : null,
+      ownerName,
+      pmName,
+      occupantName,
+      payment: payment
+        ? {
+            status: payment.status as PaymentState,
+            amountCents: Number(payment.amount_cents),
+            payoutCents: splitPayment(Number(payment.amount_cents)).tradiePayoutCents,
+          }
+        : null,
+      evidence,
+    };
+    return projectJob(source, viewer);
+  },
+
+  async getAddressRecord(token, propertyId): Promise<AddressRecordView | null> {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal", "pm_portfolio"]);
+    if (!row) return null;
+    const db = serviceClient();
+    let pid: string | null = null;
+    let showMoney = true;
+    if (row.scope === "tenant_intake") {
+      pid = row.aggregate_id;
+      showMoney = false;
+    } else if (row.scope === "owner_portal") {
+      const { data: owned } = await db.from("properties").select("id").eq("owner_contact_id", row.aggregate_id);
+      const ownedIds = ((owned ?? []) as Array<{ id: string }>).map((p) => p.id);
+      pid = propertyId && ownedIds.includes(propertyId) ? propertyId : (ownedIds[0] ?? null);
+    } else {
+      const { data: managed } = await db.from("properties").select("id").eq("pm_contact_id", row.contact_id);
+      const managedIds = ((managed ?? []) as Array<{ id: string }>).map((p) => p.id);
+      pid = propertyId && managedIds.includes(propertyId) ? propertyId : null;
+    }
+    if (!pid) return null;
+
+    const detail = await supabaseData.getProperty(pid);
+    if (!detail) return null;
+
+    const { data: historyRows } = await db
+      .from("work_orders")
+      .select(
+        "invoice_cents, invoiced_at, contacts(full_name), maintenance_requests!work_orders_request_id_fkey!inner(title, category, property_id)",
+      )
+      .not("invoice_cents", "is", null)
+      .eq("maintenance_requests.property_id", pid)
+      .order("invoiced_at", { ascending: false });
+    const history = ((historyRows ?? []) as unknown as Array<{
+      invoice_cents: number;
+      invoiced_at: string | null;
+      contacts: ContactJoin | ContactJoin[] | null;
+      maintenance_requests: { title: string; category: string } | { title: string; category: string }[] | null;
+    }>).map((r) => {
+      const req = Array.isArray(r.maintenance_requests) ? r.maintenance_requests[0] : r.maintenance_requests;
+      return {
+        title: req?.title ?? "",
+        category: (req?.category ?? "other") as RequestCategory,
+        invoiceCents: showMoney ? Number(r.invoice_cents) : null,
+        tradieName: normalizeContact(r.contacts)?.full_name ?? "Verified tradie",
+        at: r.invoiced_at,
+      };
+    });
+
+    const { count: eventsCount } = await db
+      .from("events")
+      .select("id", { count: "exact", head: true })
+      .eq("org_id", (await db.from("properties").select("org_id").eq("id", pid).maybeSingle()).data?.org_id ?? "")
+      .eq("aggregate_type", "maintenance_request");
+
+    return {
+      propertyId: pid,
+      address: detail.address,
+      suburb: detail.suburb,
+      compliance: {
+        propertyAddress: `${detail.address}, ${detail.suburb}`,
+        overall: detail.compliance.overall,
+        requirements: detail.compliance.requirements.map((r) => ({
+          name: r.requirement.name,
+          status: r.status,
+          lastCompletedAt: r.lastCompletedAt?.toISOString() ?? null,
+          dueAt: r.dueAt?.toISOString() ?? null,
+        })),
+      },
+      assets: await supabaseAssetsFor(db, pid),
+      history,
+      warranties: detail.openWarranties.map((w) => ({
+        assetLabel: w.assetLabel,
+        tradieName: w.tradieName,
+        expiresAt: w.expiresAt,
+      })),
+      spend12moCents: showMoney ? (await spendingForProperties(db, [pid], 12)).totalCents : null,
+      eventsCount: eventsCount ?? 0,
+    };
+  },
+
+  async getDeckTiles(pmPortfolioToken): Promise<DeckTile[]> {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return [];
+    const db = serviceClient();
+    const { data: managed } = await db.from("properties").select("id, address_line1").eq("pm_contact_id", resolved.contact_id);
+    const managedRows = (managed ?? []) as Array<{ id: string; address_line1: string }>;
+    if (managedRows.length === 0) return [];
+    const { data: reqs } = await db
+      .from("maintenance_requests")
+      .select("id, title, status, property_id, reported_at")
+      .in("property_id", managedRows.map((p) => p.id))
+      .order("reported_at", { ascending: false })
+      .limit(40);
+    const tiles: DeckTile[] = [];
+    for (const r of (reqs ?? []) as Array<{ id: string; title: string; status: string; property_id: string; reported_at: string }>) {
+      const [{ data: wo }, { data: payment }] = await Promise.all([
+        db.from("work_orders").select("on_the_way_at").eq("request_id", r.id).maybeSingle(),
+        db.from("payments").select("status").eq("request_id", r.id).maybeSingle(),
+      ]);
+      tiles.push({
+        requestId: r.id,
+        title: r.title,
+        address: managedRows.find((p) => p.id === r.property_id)?.address_line1 ?? "",
+        state: r.status as RequestState,
+        arcStep: arcStepFor(r.status as RequestState, {
+          onTheWay: Boolean(wo?.on_the_way_at),
+          captured: payment?.status === "captured" || payment?.status === "transferred",
+        }),
+        needsHuman: ["pending_approval", "evidence_pending"].includes(r.status),
+        at: r.reported_at,
+      });
+    }
+    return tiles;
+  },
 };
 
 interface ContactJoin {
@@ -2448,23 +3226,33 @@ async function acceptQuoteTx(
     actor_id: actorId,
   });
 
-  // George's slot proposal (v7 §3): from the winning tradie's recurring
-  // availability windows; the tenant/owner confirms one on a card.
+  // v8: a slot chosen at booking is confirmed by this acceptance — no proposal
+  // round. Otherwise George proposes from availability (v7 §3) and a human
+  // confirms on a card.
   const [{ data: windows }, { data: reqDetail }] = await Promise.all([
     db
       .from("tradie_availability_windows")
       .select("day_of_week, start_time, end_time")
       .eq("tradie_contact_id", accepted.tradie_contact_id),
-    db.from("maintenance_requests").select("is_urgent").eq("id", req.id).maybeSingle(),
+    db
+      .from("maintenance_requests")
+      .select("is_urgent, booked_start_at, booked_end_at")
+      .eq("id", req.id)
+      .maybeSingle(),
   ]);
-  const slots = proposeSlots(
-    ((windows ?? []) as Array<{ day_of_week: number; start_time: string; end_time: string }>).map((w) => ({
-      dayOfWeek: w.day_of_week,
-      startTime: w.start_time,
-      endTime: w.end_time,
-    })),
-    { from: earliestSlotStart(new Date(), Boolean(reqDetail?.is_urgent)) },
-  );
+  const bookedSlot = reqDetail?.booked_start_at
+    ? { startAt: reqDetail.booked_start_at as string, endAt: (reqDetail.booked_end_at ?? reqDetail.booked_start_at) as string }
+    : null;
+  const slots = bookedSlot
+    ? []
+    : proposeSlots(
+        ((windows ?? []) as Array<{ day_of_week: number; start_time: string; end_time: string }>).map((w) => ({
+          dayOfWeek: w.day_of_week,
+          startTime: w.start_time,
+          endTime: w.end_time,
+        })),
+        { from: earliestSlotStart(new Date(), Boolean(reqDetail?.is_urgent)) },
+      );
 
   const { data: createdWo } = await db
     .from("work_orders")
@@ -2476,10 +3264,22 @@ async function acceptQuoteTx(
       quote_cents: accepted.quote_cents,
       call_out_fee_cents: accepted.call_out_fee_cents,
       quote_id: accepted.id,
-      proposed_slots: slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString() })),
+      proposed_slots: bookedSlot
+        ? null
+        : slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString() })),
+      scheduled_start_at: bookedSlot?.startAt ?? null,
+      scheduled_end_at: bookedSlot?.endAt ?? null,
     })
     .select("id")
     .single();
+  if (createdWo) {
+    // Link the booking authorization to the work order it now backs.
+    await db
+      .from("payments")
+      .update({ work_order_id: createdWo.id, updated_at: new Date().toISOString() })
+      .eq("request_id", req.id)
+      .is("work_order_id", null);
+  }
   if (createdWo && slots.length > 0) {
     await db.from("events").insert({
       org_id: req.org_id,
@@ -2701,6 +3501,79 @@ async function resolveTokenAny(rawToken: string, allowed: TokenScope[]): Promise
     row.scope,
   );
   return check.ok ? row : null;
+}
+
+// ——— v8 R1 helpers ———
+
+async function onlineTradieIds(db: ReturnType<typeof serviceClient>): Promise<string[]> {
+  const { data } = await db.from("tradie_presence").select("tradie_contact_id").eq("online", true);
+  return ((data ?? []) as Array<{ tradie_contact_id: string }>).map((r) => r.tradie_contact_id);
+}
+
+async function bookablePropertyId(
+  db: ReturnType<typeof serviceClient>,
+  token: string,
+  propertyId?: string,
+): Promise<string | null> {
+  const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal"]);
+  if (!row) return null;
+  if (row.scope === "tenant_intake") return row.aggregate_id;
+  const { data: owned } = await db.from("properties").select("id").eq("owner_contact_id", row.aggregate_id);
+  const ownedIds = ((owned ?? []) as Array<{ id: string }>).map((p) => p.id);
+  if (propertyId) return ownedIds.includes(propertyId) ? propertyId : null;
+  return ownedIds[0] ?? null;
+}
+
+async function evidenceItemsFor(
+  db: ReturnType<typeof serviceClient>,
+  workOrderId: string,
+): Promise<PlaybookEvidenceItem[]> {
+  const { data } = await db.from("job_evidence").select("gate, created_at").eq("work_order_id", workOrderId);
+  return ((data ?? []) as Array<{ gate: string; created_at: string }>).map((e) => ({
+    gate: e.gate as PlaybookEvidenceItem["gate"],
+    at: new Date(e.created_at),
+  }));
+}
+
+async function contactName(db: ReturnType<typeof serviceClient>, contactId: string): Promise<string | null> {
+  const { data } = await db.from("contacts").select("full_name").eq("id", contactId).maybeSingle();
+  return (data?.full_name as string | undefined) ?? null;
+}
+
+async function supabaseAssetsFor(db: ReturnType<typeof serviceClient>, propertyId: string) {
+  const medians = await categoryMedians(db);
+  const today = new Date();
+  const { data: assets } = await db
+    .from("property_assets")
+    .select("label, category, installed_at, properties(address_line1, suburb, state, postcode)")
+    .eq("property_id", propertyId);
+  return ((assets ?? []) as Array<{
+    label: string;
+    category: string;
+    installed_at: string | null;
+    properties:
+      | { address_line1: string; suburb: string; state: string; postcode: string }
+      | { address_line1: string; suburb: string; state: string; postcode: string }[]
+      | null;
+  }>).map((a) => {
+    const prop = Array.isArray(a.properties) ? a.properties[0] : a.properties;
+    const horizon = assessAssetHorizon({
+      category: a.category as RequestCategory,
+      installedAt: a.installed_at ? new Date(a.installed_at) : today,
+      today,
+    });
+    return {
+      propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
+      assetLabel: a.label,
+      category: a.category as RequestCategory,
+      ageYears: a.installed_at ? horizon.ageYears : 0,
+      effectiveLifeYears: horizon.effectiveLifeYears,
+      remainingLifeYears: a.installed_at ? horizon.remainingLifeYears : horizon.effectiveLifeYears,
+      status: a.installed_at ? horizon.status : ("healthy" as const),
+      plannedReplacementCents: medians[a.category as RequestCategory] ?? null,
+      disclaimer: "planning_estimate" as const,
+    };
+  });
 }
 
 // ——— Talk / See / Do helpers (v6): deterministic projections, no LLM ———

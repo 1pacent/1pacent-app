@@ -1,26 +1,37 @@
 import {
+  arcStepFor,
   assessAssetHorizon,
+  bookableAmountFromBand,
   buildObligationsCalendar,
+  checkPlaybookGate,
   computeBatchableCompliance,
   decideApproval,
   earliestSlotStart,
   estimateDepreciation,
+  estimatePriceBand,
   evaluateApprovalPolicy,
   evaluateProperty,
   findWarrantyMatch,
   formatSlot,
+  getPlaybook,
   isUrgentCategory,
+  playbookForCategory,
   projectState,
   proposeSlots,
   rankQuotes,
   scoreAvailability,
   scoreTrust,
+  splitPayment,
   summariseSpending,
   transition,
+  unsatisfiedGates,
   validateQuoteSubmission,
   type ActorType,
   type ApprovalPolicyRule,
   type EvidenceRecord,
+  type EvidenceItem as PlaybookEvidenceItem,
+  type PaymentState,
+  type Playbook,
   type PropertyComplianceProfile,
   type PropertyComplianceStatus,
   type RequestCategory,
@@ -30,9 +41,18 @@ import {
 } from "@1pacent/core";
 import type {
   AcceptQuoteResult,
+  AddressRecordView,
   ApprovalPolicyRuleInput,
   ApprovalPolicyRuleView,
   AssetHorizonView,
+  BookingPreview,
+  BookJobInput,
+  BookJobResult,
+  DeckTile,
+  JobEvidenceView,
+  JobOfferView,
+  JobProjection,
+  JobViewer,
   AutoQuoteSettingsView,
   CanvasCard,
   ComplianceStatusView,
@@ -77,6 +97,7 @@ import {
   type CanvasSlotInfo,
   type QuotePickInfo,
 } from "./canvas";
+import { projectJob, type JobSource } from "./job-projection";
 
 /**
  * In-memory demo repository. This is the seam where the Supabase-backed
@@ -120,6 +141,10 @@ export interface DemoRequest {
   warrantyClaimOfWorkOrderId?: string;
   /** Set on PM compliance-batch requests — invoicing the job files the certificate. */
   complianceRequirementKey?: string;
+  /** v8: which playbook this job runs, and the slot chosen at booking. */
+  playbookKey?: string;
+  bookedStartAt?: string | null;
+  bookedEndAt?: string | null;
 }
 
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
@@ -387,7 +412,38 @@ interface DemoWorkOrder {
   proposedSlots?: Array<{ startAt: string; endAt: string }> | null;
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
+  onTheWayAt?: string | null;
 }
+
+/** v8: payments mirror the (simulated) PSP — no custody, ever. */
+interface DemoPayment {
+  id: string;
+  requestId: string;
+  workOrderId: string | null;
+  status: PaymentState;
+  amountCents: number;
+  platformFeeCents: number;
+  payoutCents: number;
+}
+const payments: DemoPayment[] = [];
+let demoPaymentSeq = 0;
+
+interface DemoJobEvidence {
+  id: string;
+  workOrderId: string;
+  gate: string;
+  dataUrl: string | null;
+  note: string | null;
+  createdAt: string;
+}
+const jobEvidence: DemoJobEvidence[] = [];
+let demoEvidenceSeq = 0;
+
+/** The Go Online toggle. John starts online so the demo pings immediately. */
+const tradiePresence: Record<string, { online: boolean }> = {
+  "contact-tradie-john": { online: true },
+  "contact-tradie-leo": { online: true },
+};
 const workOrders: DemoWorkOrder[] = [
   // A completed HWS replacement — gives the Cost Index a real median for hot
   // water systems, which powers the horizon card's planned-replacement figure
@@ -670,16 +726,24 @@ function acceptQuoteInternal(
   const declined = requestQuotes.filter((q) => q.id !== quoteId);
   declined.forEach((q) => (q.status = "not_selected"));
 
-  // George's slot proposal (v7 §3): computed here, confirmed by a human on a card.
+  // v8: a slot chosen at booking is confirmed by this acceptance — no proposal
+  // round. Otherwise George proposes from availability (v7 §3) and a human
+  // confirms on a card.
+  const bookedSlot = request.bookedStartAt
+    ? { startAt: request.bookedStartAt, endAt: request.bookedEndAt ?? request.bookedStartAt }
+    : null;
   const windows = availabilityWindows
     .filter((w) => w.tradieContactId === accepted.tradieContactId)
     .map((w) => ({ dayOfWeek: w.dayOfWeek, startTime: w.startTime, endTime: w.endTime }));
-  const slots = proposeSlots(windows, {
-    from: earliestSlotStart(new Date(), isUrgentCategory(request.category)),
-  });
+  const slots = bookedSlot
+    ? []
+    : proposeSlots(windows, {
+        from: earliestSlotStart(new Date(), isUrgentCategory(request.category)),
+      });
 
+  const woId = `wo-${++demoWorkOrderSeq}`;
   workOrders.push({
-    id: `wo-${++demoWorkOrderSeq}`,
+    id: woId,
     requestId: request.id,
     tradieContactId: accepted.tradieContactId,
     status: "scheduled",
@@ -689,10 +753,13 @@ function acceptQuoteInternal(
     assetId: null,
     warrantyExpiresAt: null,
     completionNote: null,
-    proposedSlots: slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString() })),
-    scheduledStartAt: null,
-    scheduledEndAt: null,
+    proposedSlots: bookedSlot ? null : slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString() })),
+    scheduledStartAt: bookedSlot?.startAt ?? null,
+    scheduledEndAt: bookedSlot?.endAt ?? null,
   });
+  // Link the booking authorization to the work order it now backs.
+  const payment = payments.find((p) => p.requestId === request.id && p.workOrderId === null);
+  if (payment) payment.workOrderId = woId;
 
   const acceptedContact = contacts.find((c) => c.id === accepted.tradieContactId);
   return {
@@ -1851,7 +1918,573 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
     return tradieAccuracyFor(resolved.contactId);
   },
+
+  // ——— v8 R1: The Uber Slice ———
+
+  async previewBooking(token, input): Promise<BookingPreview | null> {
+    const propertyId = bookablePropertyId(token, input.propertyId);
+    if (!propertyId) return null;
+    const property = properties.find((p) => p.id === propertyId);
+    if (!property) return null;
+    const playbook = (input.playbookKey ? getPlaybook(input.playbookKey) : null) ?? playbookForCategory(input.category);
+
+    let bandLow: number | null = null;
+    let bandHigh: number | null = null;
+    let bookAmount: number | null = null;
+    if (playbook.pricing.model === "fixed_band") {
+      const band = estimatePriceBand(playbook.category, await demoData.getComparableJobs(propertyId, playbook.category));
+      bandLow = band.lowCents;
+      bandHigh = band.highCents;
+      bookAmount = bookableAmountFromBand(band.lowCents, band.highCents);
+    }
+
+    const online = onlineTradieIds();
+    const urgent = isUrgentCategory(playbook.category);
+    const windows = availabilityWindows
+      .filter((w) => online.includes(w.tradieContactId))
+      .map((w) => ({ dayOfWeek: w.dayOfWeek, startTime: w.startTime, endTime: w.endTime }));
+    const slots = proposeSlots(windows, { from: earliestSlotStart(new Date(), urgent), count: 3 });
+
+    return {
+      playbookKey: playbook.key,
+      playbookTitle: playbook.title,
+      category: playbook.category,
+      pricing: playbook.pricing.model,
+      bandLowCents: bandLow,
+      bandHighCents: bandHigh,
+      bookAmountCents: bookAmount,
+      evidenceGates: [...playbook.evidenceGates],
+      warrantyMonths: playbook.warrantyDefaultMonths,
+      urgent,
+      slots: slots.map((s) => ({
+        startAt: s.startAt.toISOString(),
+        endAt: s.endAt.toISOString(),
+        label: formatSlot(s),
+      })),
+      tradiesOnline: online.length,
+      propertyId,
+      propertyAddress: `${property.address}, ${property.suburb}`,
+    };
+  },
+
+  async bookJob(token, input): Promise<BookJobResult> {
+    const propertyId = bookablePropertyId(token, input.propertyId);
+    if (!propertyId) return { ok: false, error: "This link isn't active." };
+    const playbook = (getPlaybook(input.playbookKey) ?? playbookForCategory(input.category)) as Playbook;
+    const urgent = isUrgentCategory(playbook.category);
+    const now = new Date().toISOString();
+
+    const request: DemoRequest = {
+      id: `req-${Math.random().toString(36).slice(2, 8)}`,
+      propertyId,
+      title: input.title,
+      description: input.description,
+      category: playbook.category,
+      estimateCents: null,
+      reportedAt: now,
+      playbookKey: playbook.key,
+      bookedStartAt: input.slot?.startAt ?? null,
+      bookedEndAt: input.slot?.endAt ?? null,
+      events: [
+        { eventType: "triage", actorType: "system", actorId: "sally:triage", at: now },
+        {
+          eventType: "auto_approve",
+          actorType: "system",
+          actorId: "playbook:booking",
+          at: now,
+          note: urgent
+            ? "Urgent bypass (VIC urgent repairs list)"
+            : `Fixed-process playbook "${playbook.key}" — payer authorized at booking`,
+        },
+      ],
+    };
+    requests.push(request);
+
+    if (playbook.pricing.model !== "fixed_band") {
+      // Non-standard scope: the v7 quote race runs backstage.
+      const dispatch = await demoData.dispatchQuotesForRequest(request.id);
+      return dispatch.ok
+        ? { ok: true, requestId: request.id, offered: dispatch.invites.length, amountAuthorizedCents: null }
+        : { ok: false, error: dispatch.error };
+    }
+
+    // Fixed band: authorize (simulated PSP hold — no money moves) and offer.
+    const band = estimatePriceBand(playbook.category, await demoData.getComparableJobs(propertyId, playbook.category));
+    const amount = bookableAmountFromBand(band.lowCents, band.highCents);
+    const split = splitPayment(amount);
+    payments.push({
+      id: `pay-${++demoPaymentSeq}`,
+      requestId: request.id,
+      workOrderId: null,
+      status: "authorized",
+      amountCents: amount,
+      platformFeeCents: split.platformFeeCents,
+      payoutCents: split.tradiePayoutCents,
+    });
+
+    request.events.push({ eventType: "request_quotes", actorType: "system", actorId: "george:offer", at: now });
+    const online = onlineTradieIds().slice(0, 3);
+    for (const tradieId of online) {
+      quotes.push({
+        id: `quote-${Math.random().toString(36).slice(2, 8)}`,
+        requestId: request.id,
+        tradieContactId: tradieId,
+        status: "invited",
+        quoteCents: amount,
+        callOutFeeCents: 0,
+        note: "Fixed-price offer — first accept wins.",
+        createdAt: now,
+        submittedAt: null,
+      });
+    }
+    return { ok: true, requestId: request.id, offered: online.length, amountAuthorizedCents: amount };
+  },
+
+  async getOpenOffers(tradiePortalToken): Promise<JobOfferView[]> {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return [];
+    return quotes
+      .filter((q) => q.tradieContactId === resolved.contactId && q.status === "invited")
+      .map((q) => {
+        const request = requests.find((r) => r.id === q.requestId);
+        if (!request || requestState(request) !== "quoting" || !request.playbookKey) return null;
+        const playbook = getPlaybook(request.playbookKey);
+        if (!playbook || playbook.pricing.model !== "fixed_band") return null;
+        const property = properties.find((p) => p.id === request.propertyId);
+        const slot = request.bookedStartAt
+          ? {
+              startAt: request.bookedStartAt,
+              endAt: request.bookedEndAt ?? request.bookedStartAt,
+              label: formatSlot({
+                startAt: new Date(request.bookedStartAt),
+                endAt: new Date(request.bookedEndAt ?? request.bookedStartAt),
+              }),
+            }
+          : null;
+        return {
+          quoteId: q.id,
+          requestId: request.id,
+          title: request.title,
+          playbookTitle: playbook.title,
+          propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
+          payoutCents: q.quoteCents !== null ? splitPayment(q.quoteCents).tradiePayoutCents : null,
+          slot,
+          briefing: propertyAssets
+            .filter((a) => a.propertyId === request.propertyId)
+            .map((a) => `${a.label}${a.installedAt ? ` (installed ${new Date(a.installedAt).getFullYear()})` : ""}`),
+          urgent: isUrgentCategory(request.category),
+        };
+      })
+      .filter((o): o is JobOfferView => o !== null);
+  },
+
+  async acceptJobOffer(tradiePortalToken, quoteId) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const quote = quotes.find((q) => q.id === quoteId && q.tradieContactId === resolved.contactId);
+    if (!quote || quote.status !== "invited") {
+      return { ok: false as const, error: "That job's gone — another tradie got there first." };
+    }
+    const request = requests.find((r) => r.id === quote.requestId);
+    if (!request || requestState(request) !== "quoting") {
+      return { ok: false as const, error: "That job's gone — another tradie got there first." };
+    }
+    // The tradie's tap is the human event on this side of the market.
+    quote.status = "submitted";
+    quote.submittedAt = new Date().toISOString();
+    // Payer pre-authorized at booking; George settles the match deterministically.
+    const result = acceptQuoteInternal(request, quote.id, "system", "george:dispatch");
+    if (!result.ok) return { ok: false as const, error: result.error };
+    return { ok: true as const, requestId: request.id };
+  },
+
+  async setTradiePresence(tradiePortalToken, online) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, online: false };
+    tradiePresence[resolved.contactId] = { online };
+    return { ok: true, online };
+  },
+
+  async getTradiePresence(tradiePortalToken) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { online: false };
+    return { online: tradiePresence[resolved.contactId]?.online ?? false };
+  },
+
+  async markOnMyWay(tradiePortalToken, workOrderId) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    wo.onTheWayAt = new Date().toISOString();
+    return { ok: true as const };
+  },
+
+  async addJobEvidence(tradiePortalToken, workOrderId, input) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    jobEvidence.push({
+      id: `ev-${++demoEvidenceSeq}`,
+      workOrderId,
+      gate: input.gate,
+      dataUrl: input.dataUrl,
+      note: input.note ?? null,
+      createdAt: new Date().toISOString(),
+    });
+    const request = requests.find((r) => r.id === wo.requestId);
+    const playbook = request?.playbookKey ? getPlaybook(request.playbookKey) : null;
+    const remaining = playbook ? unsatisfiedGates(playbook, evidenceItemsFor(workOrderId)) : [];
+    return { ok: true as const, gatesRemaining: remaining };
+  },
+
+  async completeJob(tradiePortalToken, workOrderId, note) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false as const, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+
+    // Core rule, not UI hope: the playbook's gates block completion.
+    const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+    if (playbook) {
+      const gate = checkPlaybookGate(playbook, "submit_evidence", evidenceItemsFor(workOrderId));
+      if (!gate.ok) return { ok: false as const, gatesRemaining: gate.missing, error: gate.message };
+    }
+
+    const current = requestState(request);
+    const result = transition(current, "submit_evidence", "tradie");
+    if (!result.ok) return { ok: false as const, error: `Cannot mark this done from state "${current}".` };
+    request.events.push({
+      eventType: "submit_evidence",
+      actorType: "tradie",
+      actorId: `token:${tradiePortalToken}`,
+      at: new Date().toISOString(),
+      note,
+    });
+    wo.status = result.state;
+    wo.completionNote = note;
+    return { ok: true as const };
+  },
+
+  async verifyAndSettle(token, requestId) {
+    const resolved = resolveDemoToken(token);
+    if (!resolved || !["tenant_intake", "owner_portal"].includes(resolved.scope)) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return { ok: false as const, error: "Request not found." };
+    const inScope =
+      resolved.scope === "tenant_intake"
+        ? request.propertyId === resolved.aggregateId
+        : properties.some((p) => p.id === request.propertyId && p.ownerContactId === resolved.aggregateId);
+    if (!inScope) return { ok: false as const, error: "Request not found." };
+
+    // The human verification — the audit point.
+    const current = requestState(request);
+    const verifyResult = transition(current, "verify", resolved.scope === "tenant_intake" ? "tenant" : "agency_user");
+    if (!verifyResult.ok) return { ok: false as const, error: `Cannot verify from state "${current}".` };
+    const now = new Date().toISOString();
+    request.events.push({
+      eventType: "verify",
+      actorType: resolved.scope === "tenant_intake" ? "tenant" : "agency_user",
+      actorId: `token:${token}`,
+      at: now,
+    });
+
+    const wo = workOrders.find((w) => w.requestId === request.id);
+    if (!wo) return { ok: true as const };
+    wo.status = verifyResult.state;
+
+    // Settlement: capture + transfer (simulated PSP), the record write, the
+    // certificate if this was a compliance playbook — Penny's whole job.
+    const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+    const payment = payments.find((p) => p.requestId === request.id);
+    const settleAmount = payment?.amountCents ?? (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+
+    const invoiceResult = transition(verifyResult.state, "invoice", "system");
+    if (invoiceResult.ok) {
+      request.events.push({
+        eventType: "invoice",
+        actorType: "system",
+        actorId: "penny:capture",
+        at: now,
+        note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}`,
+      });
+      wo.invoiceCents = settleAmount;
+      wo.invoicedAt = now;
+
+      // The Address Record write.
+      if (playbook) {
+        let asset = propertyAssets.find(
+          (a) => a.propertyId === request.propertyId && a.category === playbook.category && a.label === playbook.assetLabel,
+        );
+        if (!asset) {
+          asset = {
+            id: `asset-${++demoAssetSeq}`,
+            propertyId: request.propertyId,
+            category: playbook.category,
+            label: playbook.assetLabel,
+            installedAt: null,
+          };
+          propertyAssets.push(asset);
+        }
+        wo.assetId = asset.id;
+        if (playbook.warrantyDefaultMonths > 0) {
+          wo.warrantyExpiresAt = new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString();
+        }
+        if (playbook.compliance) {
+          const property = properties.find((p) => p.id === request.propertyId);
+          property?.evidence.push({ requirementKey: playbook.compliance.filesCertificate, completedAt: new Date() });
+        }
+      }
+
+      if (payment) {
+        payment.status = "captured";
+        payment.workOrderId = wo.id;
+        payment.status = "transferred"; // simulated PSP: same-day payout
+      }
+
+      const paidResult = transition(invoiceResult.state, "record_payment", "system");
+      const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+      if (paidResult.ok) request.events.push({ eventType: "record_payment", actorType: "system", actorId: "penny:psp", at: now });
+      if (closedResult?.ok) request.events.push({ eventType: "close", actorType: "system", actorId: "penny:psp", at: now });
+      wo.status = closedResult?.ok ? closedResult.state : invoiceResult.state;
+    }
+    return { ok: true as const };
+  },
+
+  async getJobProjection(token, requestId): Promise<JobProjection | null> {
+    const resolved = resolveDemoToken(token);
+    if (!resolved) return null;
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return null;
+
+    let viewer: JobViewer;
+    if (resolved.scope === "tenant_intake") {
+      if (request.propertyId !== resolved.aggregateId) return null;
+      viewer = "occupant";
+    } else if (resolved.scope === "owner_portal") {
+      if (!properties.some((p) => p.id === request.propertyId && p.ownerContactId === resolved.aggregateId)) return null;
+      viewer = "payer";
+    } else if (resolved.scope === "pm_portfolio") {
+      if (!properties.some((p) => p.id === request.propertyId && p.pmContactId === resolved.contactId)) return null;
+      viewer = "pm";
+    } else if (resolved.scope === "tradie_portal") {
+      const mine =
+        workOrders.some((w) => w.requestId === request.id && w.tradieContactId === resolved.contactId) ||
+        quotes.some((q) => q.requestId === request.id && q.tradieContactId === resolved.contactId);
+      if (!mine) return null;
+      viewer = "tradie";
+    } else return null;
+
+    return projectJob(demoJobSource(request), viewer);
+  },
+
+  async getAddressRecord(token, propertyId): Promise<AddressRecordView | null> {
+    const resolved = resolveDemoToken(token);
+    if (!resolved) return null;
+    let pid: string | null = null;
+    let showMoney = true;
+    if (resolved.scope === "tenant_intake") {
+      pid = resolved.aggregateId;
+      showMoney = false;
+    } else if (resolved.scope === "owner_portal") {
+      pid = propertyId && properties.some((p) => p.id === propertyId && p.ownerContactId === resolved.aggregateId)
+        ? propertyId
+        : (properties.find((p) => p.ownerContactId === resolved.aggregateId)?.id ?? null);
+    } else if (resolved.scope === "pm_portfolio") {
+      pid = propertyId && properties.some((p) => p.id === propertyId && p.pmContactId === resolved.contactId)
+        ? propertyId
+        : null;
+    }
+    if (!pid) return null;
+    const property = properties.find((p) => p.id === pid);
+    if (!property) return null;
+
+    const compliance = evaluateProperty(property.profile, property.evidence, new Date());
+    const propertyRequests = requests.filter((r) => r.propertyId === pid);
+    const history = workOrders
+      .filter((w) => w.invoiceCents !== null && propertyRequests.some((r) => r.id === w.requestId))
+      .map((w) => {
+        const r = propertyRequests.find((x) => x.id === w.requestId)!;
+        const tradie = contacts.find((c) => c.id === w.tradieContactId);
+        return {
+          title: r.title,
+          category: r.category,
+          invoiceCents: showMoney ? w.invoiceCents : null,
+          tradieName: tradie?.fullName ?? "Verified tradie",
+          at: w.invoicedAt ?? null,
+        };
+      })
+      .sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+    const warranties = workOrders
+      .filter((w) => w.warrantyExpiresAt && new Date(w.warrantyExpiresAt) > new Date())
+      .map((w) => {
+        const asset = propertyAssets.find((a) => a.id === w.assetId && a.propertyId === pid);
+        if (!asset) return null;
+        const tradie = contacts.find((c) => c.id === w.tradieContactId);
+        return { assetLabel: asset.label, tradieName: tradie?.fullName ?? "", expiresAt: w.warrantyExpiresAt! };
+      })
+      .filter((w): w is NonNullable<typeof w> => w !== null);
+
+    return {
+      propertyId: pid,
+      address: property.address,
+      suburb: property.suburb,
+      compliance: {
+        propertyAddress: `${property.address}, ${property.suburb}`,
+        overall: compliance.overall,
+        requirements: compliance.requirements.map((r) => ({
+          name: r.requirement.name,
+          status: r.status,
+          lastCompletedAt: r.lastCompletedAt?.toISOString() ?? null,
+          dueAt: r.dueAt?.toISOString() ?? null,
+        })),
+      },
+      // Include assets without an install date (age unknown ≠ invisible).
+      assets: propertyAssets
+        .filter((a) => a.propertyId === pid)
+        .map((a) => {
+          const medians = networkMedians();
+          const horizon = assessAssetHorizon({
+            category: a.category,
+            installedAt: a.installedAt ? new Date(a.installedAt) : new Date(),
+            today: new Date(),
+          });
+          return {
+            propertyAddress: `${property.address}, ${property.suburb}`,
+            assetLabel: a.label,
+            category: a.category,
+            ageYears: a.installedAt ? horizon.ageYears : 0,
+            effectiveLifeYears: horizon.effectiveLifeYears,
+            remainingLifeYears: a.installedAt ? horizon.remainingLifeYears : horizon.effectiveLifeYears,
+            status: a.installedAt ? horizon.status : ("healthy" as const),
+            plannedReplacementCents: medians[a.category] ?? null,
+            disclaimer: "planning_estimate" as const,
+          };
+        }),
+      history,
+      warranties,
+      spend12moCents: showMoney ? spendingForProperties([pid], 12).totalCents : null,
+      eventsCount: propertyRequests.reduce((n, r) => n + r.events.length, 0),
+    };
+  },
+
+  async getDeckTiles(pmPortfolioToken): Promise<DeckTile[]> {
+    const resolved = resolveDemoToken(pmPortfolioToken);
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return [];
+    const managedIds = properties.filter((p) => p.pmContactId === resolved.contactId).map((p) => p.id);
+    return requests
+      .filter((r) => managedIds.includes(r.propertyId))
+      .map((r) => {
+        const state = requestState(r);
+        const wo = workOrders.find((w) => w.requestId === r.id);
+        const payment = payments.find((p) => p.requestId === r.id);
+        const property = properties.find((p) => p.id === r.propertyId);
+        return {
+          requestId: r.id,
+          title: r.title,
+          address: property?.address ?? "",
+          state,
+          arcStep: arcStepFor(state, {
+            onTheWay: Boolean(wo?.onTheWayAt),
+            captured: payment?.status === "captured" || payment?.status === "transferred",
+          }),
+          needsHuman: ["pending_approval", "evidence_pending"].includes(state),
+          at: r.events[r.events.length - 1]?.at ?? r.reportedAt,
+        };
+      })
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  },
 };
+
+// ——— v8 R1 helpers ———
+
+function onlineTradieIds(): string[] {
+  return contacts
+    .filter((c) => c.kind === "tradie" && tradiePresence[c.id]?.online)
+    .map((c) => c.id);
+}
+
+function bookablePropertyId(token: string, propertyId?: string): string | null {
+  const resolved = resolveDemoToken(token);
+  if (!resolved) return null;
+  if (resolved.scope === "tenant_intake") return resolved.aggregateId;
+  if (resolved.scope === "owner_portal") {
+    const owned = properties.filter((p) => p.ownerContactId === resolved.aggregateId);
+    if (propertyId) return owned.some((p) => p.id === propertyId) ? propertyId : null;
+    return owned[0]?.id ?? null;
+  }
+  return null;
+}
+
+function evidenceItemsFor(workOrderId: string): PlaybookEvidenceItem[] {
+  return jobEvidence
+    .filter((e) => e.workOrderId === workOrderId)
+    .map((e) => ({ gate: e.gate as PlaybookEvidenceItem["gate"], at: new Date(e.createdAt) }));
+}
+
+function demoJobSource(request: DemoRequest): JobSource {
+  const property = properties.find((p) => p.id === request.propertyId);
+  const wo = workOrders.find((w) => w.requestId === request.id);
+  const acceptedQuote = quotes.find((q) => q.requestId === request.id && q.status === "accepted");
+  const tradieId = wo?.tradieContactId ?? acceptedQuote?.tradieContactId ?? null;
+  const tradie = tradieId ? contacts.find((c) => c.id === tradieId) : null;
+  const owner = property?.ownerContactId ? contacts.find((c) => c.id === property.ownerContactId) : null;
+  const pm = property?.pmContactId ? contacts.find((c) => c.id === property.pmContactId) : null;
+  const occupant = contacts.find((c) => c.kind === "tenant");
+  const payment = payments.find((p) => p.requestId === request.id);
+
+  return {
+    request: {
+      id: request.id,
+      title: request.title,
+      description: request.description,
+      category: request.category,
+      estimateCents: request.estimateCents,
+      state: requestState(request),
+      isWarrantyClaim: Boolean(request.warrantyClaimOfWorkOrderId),
+      events: request.events.map((e) => ({ eventType: e.eventType, actorType: e.actorType, note: e.note, at: e.at })),
+      playbookKey: request.playbookKey ?? null,
+      bookedSlot: request.bookedStartAt
+        ? { startAt: request.bookedStartAt, endAt: request.bookedEndAt ?? request.bookedStartAt }
+        : null,
+    },
+    propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
+    workOrder: wo
+      ? {
+          id: wo.id,
+          onTheWayAt: wo.onTheWayAt ?? null,
+          scheduledStartAt: wo.scheduledStartAt ?? null,
+          scheduledEndAt: wo.scheduledEndAt ?? null,
+          completionNote: wo.completionNote,
+        }
+      : null,
+    tradie: tradie ? { name: tradie.fullName, verified: true } : null,
+    ownerName: owner?.fullName ?? null,
+    pmName: pm?.fullName ?? null,
+    occupantName: occupant?.fullName ?? null,
+    payment: payment
+      ? { status: payment.status, amountCents: payment.amountCents, payoutCents: payment.payoutCents }
+      : null,
+    evidence: wo
+      ? jobEvidence
+          .filter((e) => e.workOrderId === wo.id)
+          .map((e) => ({ gate: e.gate, dataUrl: e.dataUrl, note: e.note, at: e.createdAt }))
+      : [],
+  };
+}
 
 // ——— Talk / See / Do helpers (v6): deterministic projections, no LLM ———
 

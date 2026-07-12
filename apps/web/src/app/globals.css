@@ -31,6 +31,21 @@
   --color-gold-800: #634c25;
   --color-gold-900: #453518;
 
+  /* Hi-Vis (v8): the aesthetic of a well-run site. Deep field greens for
+   * the world; hi-vis gold reserved EXCLUSIVELY for the one action that
+   * matters on each screen. Dark-first — vans at 6am, hallways at 10pm. */
+  --color-field-950: #060f0c;
+  --color-field-900: #0b1a16;
+  --color-field-800: #10261f;
+  --color-field-700: #17352c;
+  --color-field-600: #1f4a38;
+  --color-field-line: #234438;
+  --color-hivis-400: #ffd60a;
+  --color-hivis-500: #f5c400;
+  --color-hivis-600: #d9ad00;
+  --color-mint-300: #7fd6ac;
+  --color-mint-400: #4fbe8b;
+
   --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   --font-serif: var(--font-serif), ui-serif, Georgia, serif;
   --font-mono: var(--font-mono), ui-monospace, "SF Mono", Consolas, monospace;
@@ -43,4 +58,38 @@
 body {
   @apply bg-slate-50 text-slate-900 antialiased;
   font-family: var(--font-sans);
+}
+
+/* ——— Hi-Vis motion: the status arc breathes while a job is live ——— */
+@keyframes hivis-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 214, 10, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 14px rgba(255, 214, 10, 0);
+  }
+}
+.hivis-breathe {
+  animation: hivis-breathe 2.2s ease-out infinite;
+}
+
+@keyframes hivis-ping-in {
+  0% {
+    transform: translateY(14px) scale(0.98);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+.hivis-ping-in {
+  animation: hivis-ping-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+
+@keyframes hivis-arc-dash {
+  to {
+    stroke-dashoffset: 0;
+  }
 }

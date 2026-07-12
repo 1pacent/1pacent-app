@@ -9,7 +9,8 @@
     "build": "tsc --noEmit",
     "migrate": "node --experimental-strip-types scripts/migrate.ts",
     "seed": "node --experimental-strip-types scripts/seed-demo.ts",
-    "backfill-v7": "node --experimental-strip-types scripts/backfill-demo-v7.ts"
+    "backfill-v7": "node --experimental-strip-types scripts/backfill-demo-v7.ts",
+    "mint-links": "node --experimental-strip-types scripts/mint-live-links.ts"
   },
   "dependencies": {
     "postgres": "^3.4.5"

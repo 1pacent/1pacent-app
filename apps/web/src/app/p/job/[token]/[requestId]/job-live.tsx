@@ -1,0 +1,252 @@
+"use client";
+
+import { useRef, useState, useTransition } from "react";
+import { StatusArc } from "@/components/pulse/arc";
+import { GhostButton, HiVisButton, Panel } from "@/components/pulse/shell";
+import { useLive } from "@/components/pulse/use-live";
+import type { JobProjection } from "@/lib/data-types";
+import {
+  addEvidenceAction,
+  completeJobAction,
+  getJobAction,
+  onMyWayAction,
+  startJobPulseAction,
+  verifySettleAction,
+} from "../../../actions";
+
+function dollars(cents: number): string {
+  return `$${(cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2 })}`;
+}
+
+async function compressPhoto(file: File): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, 900 / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7);
+}
+
+const ROLE_LABELS = { customer: "Resident", owner: "Owner", pm: "Manager", tradie: "Tradie" } as const;
+
+export function JobLive({ token, initial }: { token: string; initial: JobProjection }) {
+  const [job, setJob] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const [gateForCamera, setGateForCamera] = useState<string>("before");
+  const [pending, startTransition] = useTransition();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  useLive(`job-${job.requestId}`, () => {
+    void getJobAction(token, job.requestId).then((next) => next && setJob(next));
+  });
+
+  function act(fn: () => Promise<{ ok: boolean; error?: string; gatesRemaining?: string[] }>) {
+    setError(null);
+    startTransition(async () => {
+      const r = await fn();
+      if (!r.ok) setError(r.error ?? "Something went wrong.");
+      const next = await getJobAction(token, job.requestId);
+      if (next) setJob(next);
+    });
+  }
+
+  const wo = job.workOrderId;
+  const gatesLeft = job.gatesRemaining;
+
+  return (
+    <div className="flex flex-1 flex-col gap-4 pt-2">
+      <div>
+        <p className="text-xs uppercase tracking-widest text-white/40">{job.propertyAddress}</p>
+        <h1 className="mt-1 font-serif text-2xl font-semibold">{job.title}</h1>
+      </div>
+
+      <Panel glow={job.arcStep !== "paid"}>
+        <StatusArc arc={job.arc} />
+        {job.slot && (
+          <p className="mt-2 text-center text-sm font-semibold text-white/80">📅 {job.slot.label}</p>
+        )}
+        {job.onTheWayAt && job.arcStep === "on_the_way" && (
+          <p className="mt-1 text-center text-xs text-[--color-mint-300]">
+            On the way since {new Date(job.onTheWayAt).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}
+          </p>
+        )}
+      </Panel>
+
+      {/* People rail */}
+      <div className="flex gap-2 overflow-x-auto">
+        {job.parties.map((p) => (
+          <div
+            key={`${p.role}-${p.name}`}
+            className="flex min-w-[96px] flex-col items-center gap-1 rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-3 py-2.5"
+          >
+            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[--color-field-700] text-sm font-bold text-white/80">
+              {p.name.split(" ").map((w) => w[0]).join("").slice(0, 2)}
+            </span>
+            <span className="text-[11px] font-semibold text-white/80">{p.name.split(" ")[0]}</span>
+            <span className="text-[9px] uppercase tracking-wide text-white/40">
+              {ROLE_LABELS[p.role]}
+              {p.verified ? " · ✓ licensed" : ""}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* Money line */}
+      <Panel>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-white/40">Money</p>
+            <p className="mt-0.5 text-sm text-white/70">{job.money.label}</p>
+          </div>
+          {job.money.visible && (
+            <p className="text-xl font-extrabold text-[--color-hivis-400]">
+              {job.money.payoutCents !== null
+                ? dollars(job.money.payoutCents)
+                : job.money.amountCents !== null
+                  ? dollars(job.money.amountCents)
+                  : ""}
+            </p>
+          )}
+        </div>
+      </Panel>
+
+      {/* Evidence strip */}
+      {(job.evidence.length > 0 || job.viewer === "tradie") && (
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-white/40">
+            Evidence{gatesLeft.length > 0 && job.viewer === "tradie" ? ` — still needed: ${gatesLeft.join(", ").replace(/_/g, " ")}` : ""}
+          </p>
+          <div className="flex gap-2 overflow-x-auto">
+            {job.evidence.map((e, i) => (
+              <div key={i} className="min-w-[88px]">
+                {e.dataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={e.dataUrl} alt={e.gate} className="h-20 w-24 rounded-xl border border-[--color-field-line] object-cover" />
+                ) : (
+                  <div className="flex h-20 w-24 items-center justify-center rounded-xl border border-[--color-field-line] bg-[--color-field-900] text-2xl">
+                    📄
+                  </div>
+                )}
+                <p className="mt-1 text-center text-[9px] uppercase tracking-wide text-white/40">
+                  {e.gate.replace(/_/g, " ")}
+                </p>
+              </div>
+            ))}
+            {job.evidence.length === 0 && (
+              <p className="text-xs text-white/30">Photos land here as the work happens.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {error && <p className="rounded-xl bg-red-500/15 px-3 py-2 text-xs text-red-300">{error}</p>}
+
+      {/* The one action that matters, per viewer per moment */}
+      <div className="mt-auto flex flex-col gap-2 pb-2">
+        {job.viewer === "tradie" && wo && (
+          <>
+            {job.actions.includes("on_my_way") && (
+              <HiVisButton breathe disabled={pending} onClick={() => act(() => onMyWayAction(token, wo, job.requestId))}>
+                🚐 On my way
+              </HiVisButton>
+            )}
+            {job.actions.includes("start") && (
+              <HiVisButton
+                breathe={!job.actions.includes("on_my_way")}
+                disabled={pending}
+                onClick={() => act(() => startJobPulseAction(token, wo, job.requestId))}
+              >
+                I&apos;ve arrived — start the job
+              </HiVisButton>
+            )}
+            {job.actions.includes("add_evidence") && (
+              <>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  hidden
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const dataUrl = await compressPhoto(file);
+                    act(() => addEvidenceAction(token, wo, job.requestId, { gate: gateForCamera, dataUrl }));
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex gap-2">
+                  {(gatesLeft.length > 0 ? gatesLeft : ["extra"]).map((gate) => (
+                    <button
+                      key={gate}
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        setGateForCamera(gate);
+                        fileRef.current?.click();
+                      }}
+                      className="flex-1 rounded-2xl border border-[--color-field-line] bg-[--color-field-900] px-3 py-3 text-sm font-semibold text-white/80 active:scale-[0.97]"
+                    >
+                      📷 {gate.replace(/_/g, " ")}
+                    </button>
+                  ))}
+                </div>
+                {job.actions.includes("mark_done") && (
+                  <HiVisButton
+                    breathe={gatesLeft.length === 0}
+                    disabled={pending || gatesLeft.length > 0}
+                    onClick={() => act(() => completeJobAction(token, wo, job.requestId, "Done via Pulse"))}
+                  >
+                    {gatesLeft.length > 0 ? "Evidence first, then done" : "Job's done ✓"}
+                  </HiVisButton>
+                )}
+              </>
+            )}
+            {job.arcStep === "done" && (
+              <p className="text-center text-xs text-white/40">
+                Waiting on the customer&apos;s tap — you&apos;ll be paid the moment they verify.
+              </p>
+            )}
+            {job.arcStep === "paid" && (
+              <p className="rounded-2xl bg-[--color-mint-400]/15 px-4 py-3 text-center text-sm font-bold text-[--color-mint-300]">
+                💸 Paid out — same day. Nice work.
+              </p>
+            )}
+          </>
+        )}
+
+        {job.viewer !== "tradie" && job.actions.includes("verify") && (
+          <HiVisButton breathe disabled={pending} onClick={() => act(() => verifySettleAction(token, job.requestId))}>
+            Yes — it&apos;s fixed ✓
+          </HiVisButton>
+        )}
+        {job.viewer !== "tradie" && job.arcStep === "paid" && (
+          <p className="rounded-2xl bg-[--color-mint-400]/15 px-4 py-3 text-center text-sm font-bold text-[--color-mint-300]">
+            All done — written to the address record forever.
+          </p>
+        )}
+      </div>
+
+      {/* Timeline */}
+      <details className="pb-4">
+        <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-white/40">
+          Full history
+        </summary>
+        <ul className="mt-2 space-y-1.5">
+          {job.timeline.map((t, i) => (
+            <li key={i} className="flex justify-between text-xs">
+              <span className="text-white/70">{t.label}</span>
+              <span className="text-white/30">
+                {t.at ? new Date(t.at).toLocaleString("en-AU", { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }) : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
+// GhostButton imported for future use in variance protocol (R2).
+void GhostButton;

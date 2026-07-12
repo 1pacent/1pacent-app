@@ -1,5 +1,7 @@
 import type {
   ActorType,
+  JobArcStep,
+  PaymentState,
   PropertyComplianceStatus,
   RequestCategory,
   RequestEvent,
@@ -431,6 +433,124 @@ export interface AutoQuoteSettingsView {
   maxTotalCents: number | null;
 }
 
+/** ——— v8 R1: The Uber Slice (Developer Brief v8) ——— */
+
+export interface BookingPreview {
+  playbookKey: string;
+  playbookTitle: string;
+  category: RequestCategory;
+  pricing: "fixed_band" | "rate_card" | "quote_race";
+  bandLowCents: number | null;
+  bandHighCents: number | null;
+  /** The amount authorized at booking for fixed-band jobs (band midpoint). */
+  bookAmountCents: number | null;
+  evidenceGates: string[];
+  warrantyMonths: number;
+  urgent: boolean;
+  /** Slot PROPOSALS — confirmed only when a tradie accepts (offer-don't-assume). */
+  slots: SlotOption[];
+  tradiesOnline: number;
+  propertyId: string;
+  propertyAddress: string;
+}
+
+export interface BookJobInput {
+  title: string;
+  description: string;
+  category: RequestCategory;
+  playbookKey: string;
+  /** Owner scope must name the property; tenant scope derives it. */
+  propertyId?: string;
+  slot: { startAt: string; endAt: string } | null;
+  photoDataUrl?: string | null;
+  aiMeta?: { model: string; promptVersion: string; confidence: number } | null;
+}
+
+export type BookJobResult =
+  | { ok: true; requestId: string; offered: number; amountAuthorizedCents: number | null }
+  | { ok: false; error: string };
+
+export interface JobOfferView {
+  quoteId: string;
+  requestId: string;
+  title: string;
+  playbookTitle: string;
+  propertyAddress: string;
+  /** Tradie take-home after the platform fee. Null for quote-race offers. */
+  payoutCents: number | null;
+  slot: { startAt: string; endAt: string; label: string } | null;
+  briefing: string[];
+  urgent: boolean;
+}
+
+export interface JobEvidenceView {
+  gate: string;
+  dataUrl: string | null;
+  note: string | null;
+  at: string;
+}
+
+export type JobViewer = "payer" | "occupant" | "tradie" | "pm";
+
+export type JobAction = "on_my_way" | "start" | "add_evidence" | "mark_done" | "verify";
+
+export interface JobProjection {
+  requestId: string;
+  workOrderId: string | null;
+  title: string;
+  playbookKey: string | null;
+  playbookTitle: string;
+  category: RequestCategory;
+  state: RequestState;
+  viewer: JobViewer;
+  propertyAddress: string;
+  arcStep: JobArcStep;
+  arc: Array<{ key: JobArcStep; label: string; done: boolean; active: boolean }>;
+  parties: Array<{ role: "customer" | "owner" | "pm" | "tradie"; name: string; verified: boolean }>;
+  money: {
+    visible: boolean;
+    amountCents: number | null;
+    payoutCents: number | null;
+    status: PaymentState | "none";
+    label: string;
+  };
+  slot: { startAt: string; endAt: string; label: string } | null;
+  onTheWayAt: string | null;
+  evidence: JobEvidenceView[];
+  gatesRemaining: string[];
+  timeline: Array<{ label: string; at: string | null }>;
+  actions: JobAction[];
+}
+
+export interface AddressRecordView {
+  propertyId: string;
+  address: string;
+  suburb: string;
+  compliance: ComplianceStatusView;
+  assets: AssetHorizonView[];
+  history: Array<{
+    title: string;
+    category: RequestCategory;
+    invoiceCents: number | null;
+    tradieName: string;
+    at: string | null;
+  }>;
+  warranties: Array<{ assetLabel: string; tradieName: string; expiresAt: string }>;
+  /** Hidden for occupant viewers — money is the payer's business. */
+  spend12moCents: number | null;
+  eventsCount: number;
+}
+
+export interface DeckTile {
+  requestId: string;
+  title: string;
+  address: string;
+  state: RequestState;
+  arcStep: JobArcStep;
+  needsHuman: boolean;
+  at: string;
+}
+
 export interface DataSource {
   listProperties(): Promise<PropertySummary[]>;
   getProperty(id: string): Promise<PropertyDetail | null>;
@@ -588,6 +708,55 @@ export interface DataSource {
 
   // Tradie accuracy (feeds the Accuracy card and the get_my_accuracy tool)
   getTradieAccuracy(tradiePortalToken: string): Promise<TradieAccuracyView | null>;
+
+  // ——— v8 R1: The Uber Slice ———
+
+  /** The Button's confirmation sheet: playbook, price band, slot proposals. */
+  previewBooking(
+    token: string,
+    input: { category: RequestCategory; playbookKey?: string; propertyId?: string },
+  ): Promise<BookingPreview | null>;
+
+  /** Book: create the request pre-approved under the playbook, authorize the
+   * payment (simulated PSP hold — no custody), offer to Online tradies. */
+  bookJob(token: string, input: BookJobInput): Promise<BookJobResult>;
+
+  /** The tradie's pings — open offers on fixed-band jobs. First accept wins. */
+  getOpenOffers(tradiePortalToken: string): Promise<JobOfferView[]>;
+  acceptJobOffer(
+    tradiePortalToken: string,
+    quoteId: string,
+  ): Promise<{ ok: boolean; requestId?: string; error?: string }>;
+
+  // Go Online / presence
+  setTradiePresence(tradiePortalToken: string, online: boolean): Promise<{ ok: boolean; online: boolean }>;
+  getTradiePresence(tradiePortalToken: string): Promise<{ online: boolean }>;
+
+  // The live arc
+  markOnMyWay(tradiePortalToken: string, workOrderId: string): Promise<{ ok: boolean; error?: string }>;
+  addJobEvidence(
+    tradiePortalToken: string,
+    workOrderId: string,
+    input: { gate: string; dataUrl: string | null; note?: string },
+  ): Promise<{ ok: boolean; gatesRemaining?: string[]; error?: string }>;
+  /** Gate-checked completion — core refuses until the playbook's evidence gates pass. */
+  completeJob(
+    tradiePortalToken: string,
+    workOrderId: string,
+    note: string,
+  ): Promise<{ ok: boolean; gatesRemaining?: string[]; error?: string }>;
+  /** The payer/occupant verifies → capture + transfer (simulated PSP) + the
+   * Address Record write (asset, warranty, certificate). One human tap. */
+  verifyAndSettle(token: string, requestId: string): Promise<{ ok: boolean; error?: string }>;
+
+  /** The shared Job Screen, projected for the viewer the token implies. */
+  getJobProjection(token: string, requestId: string): Promise<JobProjection | null>;
+
+  /** The address's medical file. Occupants see it without money fields. */
+  getAddressRecord(token: string, propertyId?: string): Promise<AddressRecordView | null>;
+
+  /** The PM Deck: every live job as a tile. */
+  getDeckTiles(pmPortfolioToken: string): Promise<DeckTile[]>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

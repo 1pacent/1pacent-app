@@ -2,6 +2,7 @@ export * from "./openrouter-client";
 export * from "./gateway";
 export * from "./sally/prompts";
 export * from "./sally/extract";
+export * from "./sally/triage";
 export * from "./sally/chat";
 export * from "./sally/tools";
 export * from "./memory/embed";
