@@ -986,7 +986,9 @@ export const supabaseData: DataSource = {
     if (!prop) return [];
     const { data, error } = await db
       .from("work_orders")
-      .select("invoice_cents, maintenance_requests!inner(org_id, category)")
+      // FK hint required: two relationships exist between work_orders and
+      // maintenance_requests (request_id + warranty_claim_of_work_order_id).
+      .select("invoice_cents, maintenance_requests!work_orders_request_id_fkey!inner(org_id, category)")
       .eq("maintenance_requests.org_id", prop.org_id)
       .eq("maintenance_requests.category", category)
       .not("invoice_cents", "is", null)
@@ -2401,7 +2403,12 @@ export const supabaseData: DataSource = {
     let bandHigh: number | null = null;
     let bookAmount: number | null = null;
     if (playbook.pricing.model === "fixed_band") {
-      const comparables = await supabaseData.getComparableJobs(propertyId, playbook.category);
+      const comparables = await supabaseData
+        .getComparableJobs(propertyId, playbook.category)
+        .catch((e) => {
+          console.warn("[pulse] comparables failed, using fallback band:", e);
+          return [] as Array<{ finalInvoiceCents: number }>;
+        });
       const band = estimatePriceBand(playbook.category, comparables);
       bandLow = band.lowCents;
       bandHigh = band.highCents;
@@ -2504,7 +2511,12 @@ export const supabaseData: DataSource = {
     }
 
     // Fixed band: authorize (simulated PSP hold — no custody) and offer.
-    const comparables = await supabaseData.getComparableJobs(propertyId, playbook.category);
+    const comparables = await supabaseData
+      .getComparableJobs(propertyId, playbook.category)
+      .catch((e) => {
+        console.warn("[pulse] comparables failed, using fallback band:", e);
+        return [] as Array<{ finalInvoiceCents: number }>;
+      });
     const band = estimatePriceBand(playbook.category, comparables);
     const amount = bookableAmountFromBand(band.lowCents, band.highCents);
     const split = splitPayment(amount);
