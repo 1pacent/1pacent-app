@@ -121,11 +121,37 @@ variance money → one-tap approve (token burns on replay) → Fast-Pay →
 gates → done → one-tap verify settles → arc paid → money line equals the
 approved total → Data Pack generates. Build green.
 
-**Ops still required (operator approval / dashboard access needed):**
-1. Apply migrations `0018_pulse_r2.sql` + `0019_pulse_r3.sql` to live
-   Supabase (`pnpm --filter @1pacent/db migrate`).
-2. Vercel env: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`
-   (values in VPS root `.env`); later `STRIPE_SECRET_KEY` +
-   `STRIPE_WEBHOOK_SECRET` when Stripe goes live.
-3. Import + activate n8n workflows: `V8-COMPLIANCE-TICKLER`,
-   `V8-MONTHLY-PULSE`, `V8-STRIPE-WEBHOOKS`.
+**Ops (completed 2026-07-13, operator-authorized):**
+1. ✅ Migrations 0018 + 0019 applied to live Supabase.
+2. ✅ Vercel production env: `VAPID_*` set, site redeployed.
+   (`STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` remain for Stripe go-live.)
+3. ✅ n8n workflows imported + activated — see the consolidation below.
+
+## n8n consolidation (2026-07-13)
+
+**Rule (operator-stated): the VPS runs ONE shared n8n for every application**
+— `/opt/n8n`, container `n8n-n8n-1`, public at n8n.1pacent.com. Reality had
+drifted: the AI4Boards stack embeds its own n8n, BOTH containers carried the
+Docker DNS alias `n8n`, and the shared Caddy (attached to both networks)
+resolved `n8n:5678` to the *AI4Boards* instance — so n8n.1pacent.com was
+silently proxying there, which is how the live `1PACENT-SALLY-DISPATCH-*`
+workflows ended up imported into the wrong instance.
+
+What changed:
+- Caddy upstreams for n8n.1pacent.com / api.1pacent.com / the contabo host /
+  `:80` are now the explicit container `n8n-n8n-1:5678` (ambiguous alias
+  removed from routing; `/opt/n8n/Caddyfile`).
+- `1PACENT-SALLY-DISPATCH-QUOTES`/`-NOTIFY` plus their two credentials
+  ("1Pacent Resend", "1Pacent Internal Auth") migrated to the shared n8n;
+  the three V8 workflows imported there; all five published + active.
+  Verified live: dispatch webhooks 200 with auth / 403 without; Stripe
+  forwarder 200.
+- One token now rules the internal seam — the "1Pacent Internal Auth"
+  credential value. Synced to: Vercel `N8N_INTERNAL_AUTH_TOKEN`, VPS root
+  `.env`, and the V8 cron workflows. Vercel `N8N_INTERNAL_URL` is explicitly
+  `https://n8n.1pacent.com`. Verified: prod `/api/internal/tickler` and
+  `/monthly-pulse` return `{ok:true}` with the token, 401 without.
+- Old copies in the AI4Boards n8n deactivated (flag set; takes effect on
+  that container's next restart — its other tenants were not disturbed).
+- The never-started per-app n8n service removed from this repo's
+  `docker-compose.yml`.
