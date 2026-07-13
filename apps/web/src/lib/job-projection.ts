@@ -10,7 +10,7 @@ import {
   type PaymentState,
   type RequestEvent,
 } from "@1pacent/core";
-import type { JobAction, JobEvidenceView, JobProjection, JobViewer, RequestView } from "./data-types";
+import type { JobAction, JobEvidenceView, JobProjection, JobViewer, RequestView, VarianceView } from "./data-types";
 
 /**
  * The shared Job Screen projector (Developer Brief v8 §3): one function, a
@@ -35,6 +35,8 @@ export interface JobSource {
   occupantName: string | null;
   payment: { status: PaymentState; amountCents: number; payoutCents: number | null } | null;
   evidence: JobEvidenceView[];
+  /** Latest variance on this job, if any (v8 R3). */
+  variance: VarianceView | null;
 }
 
 const ARC_LABELS: Record<JobArcStep, string> = {
@@ -144,17 +146,27 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
     .filter((e) => EVENT_LABELS[e.eventType])
     .map((e) => ({ label: EVENT_LABELS[e.eventType]!, at: e.at ?? null }));
 
+  const pendingVariance = source.variance?.status === "pending" ? source.variance : null;
+
   const actions: JobAction[] = [];
   if (viewer === "tradie" && source.workOrder) {
     if (request.state === "scheduled" && !source.workOrder.onTheWayAt) actions.push("on_my_way");
     if (request.state === "scheduled") actions.push("start");
     if (request.state === "in_progress") {
       actions.push("add_evidence");
-      actions.push("mark_done");
+      // Work pauses on a pending variance — the payer decides before more
+      // scope lands (v8 §4).
+      if (!pendingVariance) {
+        actions.push("mark_done");
+        actions.push("propose_variance");
+      }
     }
   }
   if ((viewer === "payer" || viewer === "occupant" || viewer === "pm") && request.state === "evidence_pending") {
     actions.push("verify");
+  }
+  if ((viewer === "payer" || viewer === "pm") && pendingVariance) {
+    actions.push("decide_variance");
   }
 
   return {
@@ -177,5 +189,8 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
     gatesRemaining,
     timeline,
     actions,
+    // Variances carry dollar figures — the occupant's projection drops them
+    // entirely (money is the payer's business, structurally).
+    variance: viewer === "occupant" ? null : source.variance,
   };
 }

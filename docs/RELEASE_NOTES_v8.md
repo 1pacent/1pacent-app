@@ -70,7 +70,7 @@ can happen when the surfaces genuinely diverge.
 3. Import + activate the two new n8n workflows; ensure `APP_BASE_URL` and
    `N8N_INTERNAL_AUTH_TOKEN` are set in the n8n environment.
 
-## R3 — Real money & the second orbit
+## R3 — Real money & the second orbit (shipped 2026-07-13)
 
 - **Payment provider seam** — `lib/payments.ts`: `SimulatedPsp` (default,
   demo parity) and `StripePsp` behind `STRIPE_SECRET_KEY`. Auth-hold at
@@ -78,17 +78,54 @@ can happen when the surfaces genuinely diverge.
   same-day Transfer to the tradie's connected account; void on decline.
   No custody at any point — Stripe holds the rails.
 - **Webhooks** — `/api/stripe/webhook` verifies signatures
-  (`STRIPE_WEBHOOK_SECRET`) and mirrors PSP truth into `payments` + the
-  ledger; `V8-STRIPE-WEBHOOKS` n8n workflow forwards as backup transport.
-- **Variance protocol** — on-site scope change → within playbook threshold
-  auto-applies (logged); above it, work pauses on a payer Moment
-  (one-tap approve/decline via `decide_variance`), incremental
-  authorization on approval.
-- **Milestone capture** — multi-day playbooks (hws_replace) capture a
-  deposit at confirmation and the balance on verify (`paymentScheduleFor`
-  in core, tested).
-- **Fast-Pay** — tradie opt-in: transfer at capture with a 2% fee line;
-  factoring risk sits with a funding partner, platform takes margin only.
-- **Data Pack on the Record** — Property Data Pack generation + report
-  view from /p/record for payers; insurer attestation block derives from
-  verified-jobs history.
+  (`STRIPE_WEBHOOK_SECRET`, HMAC + 5-min tolerance) and mirrors PSP truth
+  into `payments` + the ledger (never walking money truth backwards);
+  `V8-STRIPE-WEBHOOKS` n8n workflow forwards as backup transport.
+- **Payment slices** — `payments.kind` (primary/deposit/balance/variance);
+  projections aggregate slices and report the least-settled status so
+  "authorized" never reads as "paid".
+- **Milestone capture** — `paymentScheduleFor` in core (tested):
+  hws_replace captures a 30% deposit at confirmation (acceptance IS
+  confirmation) and the balance on verify. Quote-race jobs now authorize
+  their plan at quote acceptance (`ensurePaymentPlan`, both stores).
+- **Variance protocol** — `variances` table + `proposeVariance` /
+  `decideVariance`. Inside the playbook threshold: auto-applies, logged,
+  variance slice authorized. Above it: work pauses (`mark_done` withheld
+  by the projector), payer gets an in-app card AND a one-tap
+  `decide_variance` Moment; approval raises the hold
+  (increment_authorization, fallback new slice). Occupant projections
+  structurally drop variance money.
+- **Fast-Pay** — `tradie_rate_cards.fastpay_enabled` + toggle on /p/trade;
+  `splitPaymentWithFastPay` (2% off the payout, platform fee unchanged,
+  split recorded on the settlement event). Factoring risk is a funding
+  partner's; the platform takes margin only.
+- **Data Pack on the Record** — payer-only card on /p/record generates the
+  Property Data Pack; generic report renderer at /p/report; maintenance
+  attestation block derives from verified-jobs history (zero typing).
+
+**Honest gaps (deliberate, documented):**
+- A real Stripe authorization completes only when the payer confirms a
+  payment sheet client-side; until that UI lands, intents created
+  server-side await `requires_payment_method` on Stripe and the demo/
+  simulated lifecycle remains the demo path. The seam, webhook ingestion,
+  and ledger mirroring are live and tested.
+- Stripe Connect onboarding for tradies (connected accounts) is not built;
+  `transfer()` records the payout obligation and no-ops without a
+  destination account.
+- Negative variances (scope shrank) record but don't refund — R4.
+
+**Verification:** 213 unit tests green (169 core, 44 agents); demo-store
+E2E green end-to-end: autopilot → book → ping → accept → run → small
+variance auto-applies → big variance pauses work → occupant can't see
+variance money → one-tap approve (token burns on replay) → Fast-Pay →
+gates → done → one-tap verify settles → arc paid → money line equals the
+approved total → Data Pack generates. Build green.
+
+**Ops still required (operator approval / dashboard access needed):**
+1. Apply migrations `0018_pulse_r2.sql` + `0019_pulse_r3.sql` to live
+   Supabase (`pnpm --filter @1pacent/db migrate`).
+2. Vercel env: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`
+   (values in VPS root `.env`); later `STRIPE_SECRET_KEY` +
+   `STRIPE_WEBHOOK_SECRET` when Stripe goes live.
+3. Import + activate n8n workflows: `V8-COMPLIANCE-TICKLER`,
+   `V8-MONTHLY-PULSE`, `V8-STRIPE-WEBHOOKS`.

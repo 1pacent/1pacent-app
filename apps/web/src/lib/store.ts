@@ -35,6 +35,10 @@ import {
   type Playbook,
   type PropertyComplianceProfile,
   type PropertyComplianceStatus,
+  paymentScheduleFor,
+  splitPaymentWithFastPay,
+  varianceNeedsApproval,
+  type PaymentKind,
   type RequestCategory,
   type RequestEvent,
   type RequestState,
@@ -433,9 +437,29 @@ interface DemoPayment {
   amountCents: number;
   platformFeeCents: number;
   payoutCents: number;
+  /** v8 R3: which slice of the job's money this row is. */
+  kind: PaymentKind;
+  fastpayFeeCents?: number | null;
 }
 const payments: DemoPayment[] = [];
 let demoPaymentSeq = 0;
+
+/** v8 R3: the variance protocol's record — on-site scope changes. */
+interface DemoVariance {
+  id: string;
+  requestId: string;
+  workOrderId: string;
+  bookedCents: number;
+  newTotalCents: number;
+  reason: string;
+  status: "pending" | "approved" | "declined" | "auto_applied";
+  decidedAt: string | null;
+}
+const demoVariances: DemoVariance[] = [];
+let demoVarianceSeq = 0;
+
+/** v8 R3: Fast-Pay opt-in (parity home: tradie_rate_cards.fastpay_enabled). */
+const fastPayByTradie: Record<string, boolean> = {};
 
 interface DemoJobEvidence {
   id: string;
@@ -569,7 +593,7 @@ const demoTokens: Record<
     aggregateId: string;
     contactId?: string;
     /** moment_action only: the one decision this token signs. */
-    payload?: { kind: MomentActionKind; actorType?: "tenant" | "agency_user" };
+    payload?: { kind: MomentActionKind; actorType?: "tenant" | "agency_user"; varianceId?: string };
     usedAt?: string;
   }
 > = {
@@ -798,6 +822,10 @@ function acceptQuoteInternal(
   // Link the booking authorization to the work order it now backs.
   const payment = payments.find((p) => p.requestId === request.id && p.workOrderId === null);
   if (payment) payment.workOrderId = woId;
+
+  // v8 R3: acceptance IS confirmation — the money plan exists from here.
+  // Milestone playbooks settle their deposit slice on the spot.
+  ensureDemoPaymentPlan(request, (accepted.quoteCents ?? 0) + (accepted.callOutFeeCents ?? 0), woId);
 
   const acceptedContact = contacts.find((c) => c.id === accepted.tradieContactId);
   return {
@@ -2058,6 +2086,7 @@ export const demoData: DataSource = {
       amountCents: amount,
       platformFeeCents: split.platformFeeCents,
       payoutCents: split.tradiePayoutCents,
+      kind: "primary",
     });
 
     request.events.push({ eventType: "request_quotes", actorType: "system", actorId: "george:offer", at: now });
@@ -2436,6 +2465,7 @@ export const demoData: DataSource = {
     demoTokens[token]!.payload = {
       kind: input.kind,
       actorType: (input.meta?.actorType as "tenant" | "agency_user" | undefined) ?? undefined,
+      varianceId: (input.meta?.varianceId as string | undefined) ?? undefined,
     };
     return { ok: true, path: `/api/act/${token}` };
   },
@@ -2468,7 +2498,13 @@ export const demoData: DataSource = {
     }
 
     if (kind === "decide_variance") {
-      return { ok: false, error: "Variance decisions land with the next release." };
+      if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
+      const varianceId = resolved.payload?.varianceId;
+      if (!varianceId) return { ok: false, error: "This decision link is malformed." };
+      const result = demoDecideVariance(varianceId, choice);
+      return result.ok
+        ? { ok: true, label: choice === "approve" ? "Extra work approved" : "Kept to the booked scope", requestId }
+        : { ok: false, error: result.error };
     }
     return { ok: false, error: "Unknown decision kind." };
   },
@@ -2565,6 +2601,96 @@ export const demoData: DataSource = {
       calendarBusy: [], // external calendars are a live-stack (Supabase) concern
     };
   },
+
+  // ——— v8 R3: Real money & the second orbit ———
+
+  async proposeVariance(tradiePortalToken, workOrderId, input) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request) return { ok: false, error: "Request not found." };
+    if (requestState(request) !== "in_progress") {
+      return { ok: false, error: "Scope changes are raised on site, while the job is in progress." };
+    }
+    if (demoVariances.some((v) => v.workOrderId === wo.id && v.status === "pending")) {
+      return { ok: false, error: "A scope change is already waiting on the payer." };
+    }
+    if (input.newTotalCents <= 0 || !input.reason.trim()) return { ok: false, error: "A new total and a reason are required." };
+
+    const playbook = (request.playbookKey ? getPlaybook(request.playbookKey) : null) ?? playbookForCategory(request.category);
+    const bookedCents =
+      payments
+        .filter((p) => p.requestId === request.id && p.status !== "voided")
+        .reduce((s, p) => s + p.amountCents, 0) ||
+      (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+    const needsApproval = varianceNeedsApproval(playbook, bookedCents, input.newTotalCents);
+    const variance: DemoVariance = {
+      id: `var-${++demoVarianceSeq}`,
+      requestId: request.id,
+      workOrderId: wo.id,
+      bookedCents,
+      newTotalCents: input.newTotalCents,
+      reason: input.reason.trim(),
+      status: needsApproval ? "pending" : "auto_applied",
+      decidedAt: needsApproval ? null : new Date().toISOString(),
+    };
+    demoVariances.push(variance);
+    demoWorkOrderEvents.push({
+      workOrderId: wo.id,
+      eventType: needsApproval ? "variance_proposed" : "variance_auto_applied",
+      at: new Date().toISOString(),
+      note: variance.reason,
+    });
+    if (!needsApproval) {
+      const delta = input.newTotalCents - bookedCents;
+      if (delta > 0) {
+        const split = splitPayment(delta);
+        payments.push({
+          id: `pay-${++demoPaymentSeq}`,
+          requestId: request.id,
+          workOrderId: wo.id,
+          status: "authorized",
+          amountCents: delta,
+          platformFeeCents: split.platformFeeCents,
+          payoutCents: split.tradiePayoutCents,
+          kind: "variance",
+        });
+      }
+    }
+    return { ok: true, needsApproval, varianceId: variance.id };
+  },
+
+  async decideVariance(token, varianceId, decision) {
+    const resolved = resolveDemoToken(token);
+    if (!resolved || !["owner_portal", "pm_portfolio"].includes(resolved.scope)) {
+      return { ok: false, error: "This link isn't active." };
+    }
+    const v = demoVariances.find((x) => x.id === varianceId);
+    if (!v) return { ok: false, error: "Not found." };
+    const request = requests.find((r) => r.id === v.requestId);
+    const property = request ? properties.find((p) => p.id === request.propertyId) : null;
+    const allowed =
+      (resolved.scope === "owner_portal" && property?.ownerContactId === resolved.aggregateId) ||
+      (resolved.scope === "pm_portfolio" && property?.pmContactId === resolved.contactId);
+    if (!allowed) return { ok: false, error: "Not found." };
+    const result = demoDecideVariance(varianceId, decision);
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
+  },
+
+  async getFastPay(tradiePortalToken) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
+    return { enabled: Boolean(fastPayByTradie[resolved.contactId]) };
+  },
+
+  async setFastPay(tradiePortalToken, enabled) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    fastPayByTradie[resolved.contactId] = enabled;
+    return { ok: true };
+  },
 };
 
 // ——— v8 R2 helpers ———
@@ -2588,8 +2714,11 @@ function demoVerifySettle(
   // Settlement: capture + transfer (simulated PSP), the record write, the
   // certificate if this was a compliance playbook — Penny's whole job.
   const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
-  const payment = payments.find((p) => p.requestId === request.id);
-  const settleAmount = payment?.amountCents ?? (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+  const openSlices = payments.filter((p) => p.requestId === request.id && p.status !== "voided");
+  const settleAmount =
+    openSlices.length > 0
+      ? openSlices.reduce((s, p) => s + p.amountCents, 0)
+      : (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
 
   const invoiceResult = transition(verifyResult.state, "invoice", "system");
   if (invoiceResult.ok) {
@@ -2628,10 +2757,13 @@ function demoVerifySettle(
       }
     }
 
-    if (payment) {
-      payment.status = "captured";
-      payment.workOrderId = wo.id;
-      payment.status = "transferred"; // simulated PSP: same-day payout
+    const fastPay = Boolean(fastPayByTradie[wo.tradieContactId]);
+    const split = splitPaymentWithFastPay(settleAmount, fastPay);
+    for (const slice of openSlices) {
+      if (slice.status !== "authorized") continue; // deposits settled at confirmation
+      slice.status = "transferred"; // simulated PSP: capture + same-day payout
+      slice.workOrderId = wo.id;
+      slice.fastpayFeeCents = fastPay ? split.fastPayFeeCents : null;
     }
 
     const paidResult = transition(invoiceResult.state, "record_payment", "system");
@@ -2709,15 +2841,108 @@ function demoJobSource(request: DemoRequest): JobSource {
     ownerName: owner?.fullName ?? null,
     pmName: pm?.fullName ?? null,
     occupantName: occupant?.fullName ?? null,
-    payment: payment
-      ? { status: payment.status, amountCents: payment.amountCents, payoutCents: payment.payoutCents }
-      : null,
+    payment: aggregateDemoPayments(request.id),
     evidence: wo
       ? jobEvidence
           .filter((e) => e.workOrderId === wo.id)
           .map((e) => ({ gate: e.gate, dataUrl: e.dataUrl, note: e.note, at: e.createdAt }))
       : [],
+    variance: latestDemoVariance(request.id),
   };
+}
+
+/** Parity with supabase-data's aggregatePayments: sum the slices, report the
+ * least-settled status so "authorized" never reads as "paid". */
+function aggregateDemoPayments(
+  requestId: string,
+): { status: PaymentState; amountCents: number; payoutCents: number | null } | null {
+  const live = payments.filter((p) => p.requestId === requestId && p.status !== "voided");
+  if (live.length === 0) return null;
+  const amountCents = live.reduce((s, p) => s + p.amountCents, 0);
+  const rank: Record<string, number> = { authorized: 0, disputed: 0, captured: 1, transferred: 2 };
+  const status = live.reduce<PaymentState>(
+    (least, p) => ((rank[p.status] ?? 0) < (rank[least] ?? 0) ? p.status : least),
+    live[0]!.status,
+  );
+  return { status, amountCents, payoutCents: splitPayment(amountCents).tradiePayoutCents };
+}
+
+function latestDemoVariance(requestId: string) {
+  const v = demoVariances.filter((x) => x.requestId === requestId).at(-1);
+  return v
+    ? { id: v.id, bookedCents: v.bookedCents, newTotalCents: v.newTotalCents, reason: v.reason, status: v.status }
+    : null;
+}
+
+/** Parity with supabase-data's ensurePaymentPlan. */
+function ensureDemoPaymentPlan(request: DemoRequest, totalCents: number, workOrderId: string): void {
+  if (totalCents <= 0) return;
+  if (payments.some((p) => p.requestId === request.id)) return;
+  const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+  const schedule = paymentScheduleFor(playbook ?? {}, totalCents);
+  const now = new Date().toISOString();
+  for (const slice of schedule) {
+    const split = splitPayment(slice.amountCents);
+    const settleNow = slice.captureOn === "confirmation";
+    payments.push({
+      id: `pay-${++demoPaymentSeq}`,
+      requestId: request.id,
+      workOrderId,
+      status: settleNow ? "transferred" : "authorized",
+      amountCents: slice.amountCents,
+      platformFeeCents: split.platformFeeCents,
+      payoutCents: split.tradiePayoutCents,
+      kind: slice.kind,
+    });
+    if (settleNow) {
+      // Work-order aggregate event in the live store; the demo keeps a side
+      // log because request.events IS the state-machine stream here.
+      demoWorkOrderEvents.push({
+        workOrderId,
+        eventType: "payment_transferred",
+        at: now,
+        note: `Deposit captured at confirmation (materials) — ${(slice.amountCents / 100).toFixed(2)}`,
+      });
+    }
+  }
+}
+
+/** Demo stand-in for the live store's work_order aggregate events —
+ * variance/payment events never enter the request's state-machine stream. */
+const demoWorkOrderEvents: Array<{ workOrderId: string; eventType: string; at: string; note?: string }> = [];
+
+/** Parity with supabase-data's decideVarianceCore. */
+function demoDecideVariance(
+  varianceId: string,
+  decision: "approve" | "decline",
+): { ok: boolean; error?: string; requestId?: string } {
+  const v = demoVariances.find((x) => x.id === varianceId);
+  if (!v) return { ok: false, error: "Not found." };
+  if (v.status !== "pending") return { ok: false, error: "This change was already decided." };
+  v.status = decision === "approve" ? "approved" : "declined";
+  v.decidedAt = new Date().toISOString();
+  demoWorkOrderEvents.push({
+    workOrderId: v.workOrderId,
+    eventType: decision === "approve" ? "variance_approved" : "variance_declined",
+    at: v.decidedAt,
+  });
+  if (decision === "approve") {
+    const delta = v.newTotalCents - v.bookedCents;
+    if (delta > 0) {
+      const split = splitPayment(delta);
+      payments.push({
+        id: `pay-${++demoPaymentSeq}`,
+        requestId: v.requestId,
+        workOrderId: v.workOrderId,
+        status: "authorized",
+        amountCents: delta,
+        platformFeeCents: split.platformFeeCents,
+        payoutCents: split.tradiePayoutCents,
+        kind: "variance",
+      });
+    }
+  }
+  return { ok: true, requestId: v.requestId };
 }
 
 // ——— Talk / See / Do helpers (v6): deterministic projections, no LLM ———

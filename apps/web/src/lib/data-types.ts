@@ -492,7 +492,23 @@ export interface JobEvidenceView {
 
 export type JobViewer = "payer" | "occupant" | "tradie" | "pm";
 
-export type JobAction = "on_my_way" | "start" | "add_evidence" | "mark_done" | "verify";
+export type JobAction =
+  | "on_my_way"
+  | "start"
+  | "add_evidence"
+  | "mark_done"
+  | "verify"
+  | "propose_variance"
+  | "decide_variance";
+
+/** v8 R3: an on-site scope change, tracked as a first-class record. */
+export interface VarianceView {
+  id: string;
+  bookedCents: number;
+  newTotalCents: number;
+  reason: string;
+  status: "pending" | "approved" | "declined" | "auto_applied";
+}
 
 export interface JobProjection {
   requestId: string;
@@ -520,6 +536,8 @@ export interface JobProjection {
   gatesRemaining: string[];
   timeline: Array<{ label: string; at: string | null }>;
   actions: JobAction[];
+  /** Money-bearing — structurally hidden from occupant viewers. */
+  variance: VarianceView | null;
 }
 
 export interface AddressRecordView {
@@ -849,6 +867,29 @@ export interface DataSource {
   /** George's plan for the tradie's day: booked slots anchored, travel legs
    * estimated, conflicts flagged (never silently re-booked). */
   getTradieRun(tradiePortalToken: string): Promise<TradieRunView | null>;
+
+  // ——— v8 R3: Real money & the second orbit ———
+
+  /** The variance protocol: an on-site scope change. Inside the playbook's
+   * threshold it auto-applies (logged); above it, work pauses on a payer
+   * Moment. Returns whether a human decision is now pending. */
+  proposeVariance(
+    tradiePortalToken: string,
+    workOrderId: string,
+    input: { newTotalCents: number; reason: string },
+  ): Promise<{ ok: boolean; needsApproval?: boolean; varianceId?: string; error?: string }>;
+
+  /** The payer's decision on a pending variance — a human actor, in-app or
+   * via the one-tap moment token. Approval raises the authorization. */
+  decideVariance(
+    token: string,
+    varianceId: string,
+    decision: "approve" | "decline",
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  /** Fast-Pay opt-in: money today, 2% factoring fee off the payout. */
+  getFastPay(tradiePortalToken: string): Promise<{ enabled: boolean } | null>;
+  setFastPay(tradiePortalToken: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

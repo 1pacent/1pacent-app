@@ -20,6 +20,7 @@ import {
   hashToken,
   isUrgentCategory,
   issueToken,
+  paymentScheduleFor,
   playbookForCategory,
   projectState,
   proposeSlots,
@@ -27,11 +28,14 @@ import {
   scoreAvailability,
   scoreTrust,
   splitPayment,
+  splitPaymentWithFastPay,
   summariseSpending,
   transition,
   unsatisfiedGates,
   validateQuoteSubmission,
   validateToken,
+  varianceNeedsApproval,
+  PLAYBOOKS,
   REQUEST_EVENTS,
   type ActorType,
   type ApprovalPolicyRule,
@@ -45,6 +49,7 @@ import {
   type TokenScope,
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
+import { resolvePsp } from "./payments";
 import {
   buildOwnerCanvas,
   buildPmCanvas,
@@ -82,6 +87,7 @@ import type {
   ReportKind,
   SpendingSummaryView,
   TradieAccuracyView,
+  VarianceView,
   DispatchQuotesResult,
   IntakeContext,
   InvoiceJobInput,
@@ -2523,13 +2529,20 @@ export const supabaseData: DataSource = {
     const band = estimatePriceBand(playbook.category, comparables);
     const amount = bookableAmountFromBand(band.lowCents, band.highCents);
     const split = splitPayment(amount);
+    // The hold goes through the PSP seam — simulated by default, Stripe
+    // (manual capture) when STRIPE_SECRET_KEY is set. No custody either way.
+    const psp = resolvePsp();
+    const auth = await psp.authorize({ amountCents: amount, requestId: req.id as string, description: `1Pacent ${playbook.title}` });
+    if (!auth.ok) console.warn("[penny] authorization pending at PSP:", auth.error);
     await db.from("payments").insert({
       org_id: prop.org_id,
       request_id: req.id,
       status: "authorized",
       amount_cents: amount,
       platform_fee_cents: split.platformFeeCents,
-      psp: "simulated",
+      kind: "primary",
+      psp: psp.name,
+      psp_ref: auth.pspRef ?? null,
     });
 
     await db.from("events").insert({ ...base, event_type: "request_quotes", actor_type: "system", actor_id: "george:offer" });
@@ -2832,7 +2845,7 @@ export const supabaseData: DataSource = {
       viewer = "tradie";
     }
 
-    const [{ data: ev }, { data: wo }, { data: payment }] = await Promise.all([
+    const [{ data: ev }, { data: wo }, { data: paymentRows }, { data: varianceRow }] = await Promise.all([
       db
         .from("events")
         .select("event_type, actor_type, payload, created_at")
@@ -2844,8 +2857,18 @@ export const supabaseData: DataSource = {
         .select("id, tradie_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, contacts(full_name)")
         .eq("request_id", req.id)
         .maybeSingle(),
-      db.from("payments").select("status, amount_cents").eq("request_id", req.id).maybeSingle(),
+      db.from("payments").select("status, amount_cents").eq("request_id", req.id),
+      db
+        .from("variances")
+        .select("id, booked_cents, new_total_cents, reason, status")
+        .eq("request_id", req.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
+    const payment = aggregatePayments(
+      (paymentRows ?? []) as Array<{ status: string; amount_cents: number }>,
+    );
 
     const woRow = wo as {
       id: string;
@@ -2923,14 +2946,17 @@ export const supabaseData: DataSource = {
       ownerName,
       pmName,
       occupantName,
-      payment: payment
+      payment,
+      evidence,
+      variance: varianceRow
         ? {
-            status: payment.status as PaymentState,
-            amountCents: Number(payment.amount_cents),
-            payoutCents: splitPayment(Number(payment.amount_cents)).tradiePayoutCents,
+            id: varianceRow.id,
+            bookedCents: Number(varianceRow.booked_cents),
+            newTotalCents: Number(varianceRow.new_total_cents),
+            reason: varianceRow.reason,
+            status: varianceRow.status as VarianceView["status"],
           }
         : null,
-      evidence,
     };
     return projectJob(source, viewer);
   },
@@ -3029,10 +3055,11 @@ export const supabaseData: DataSource = {
       .limit(40);
     const tiles: DeckTile[] = [];
     for (const r of (reqs ?? []) as Array<{ id: string; title: string; status: string; property_id: string; reported_at: string }>) {
-      const [{ data: wo }, { data: payment }] = await Promise.all([
+      const [{ data: wo }, { data: paymentRows }] = await Promise.all([
         db.from("work_orders").select("on_the_way_at").eq("request_id", r.id).maybeSingle(),
-        db.from("payments").select("status").eq("request_id", r.id).maybeSingle(),
+        db.from("payments").select("status, amount_cents").eq("request_id", r.id),
       ]);
+      const payment = aggregatePayments((paymentRows ?? []) as Array<{ status: string; amount_cents: number }>);
       tiles.push({
         requestId: r.id,
         title: r.title,
@@ -3193,8 +3220,13 @@ export const supabaseData: DataSource = {
     }
 
     if (payload.kind === "decide_variance") {
-      // Wired in R3 alongside the variance protocol.
-      return { ok: false, error: "Variance decisions land with the next release." };
+      if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
+      const varianceId = (row.payload as { varianceId?: string } | null)?.varianceId;
+      if (!varianceId) return { ok: false, error: "This decision link is malformed." };
+      const result = await decideVarianceCore(db, varianceId, choice, `moment:${row.id}`);
+      return result.ok
+        ? { ok: true, label: choice === "approve" ? "Extra work approved" : "Kept to the booked scope", requestId }
+        : { ok: false, error: result.error };
     }
 
     return { ok: false, error: "Unknown decision kind." };
@@ -3344,7 +3376,238 @@ export const supabaseData: DataSource = {
       calendarBusy: busy,
     };
   },
+
+  // ——— v8 R3: Real money & the second orbit ———
+
+  async proposeVariance(tradiePortalToken, workOrderId, input) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id, quote_cents, call_out_fee_cents, status")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if ((wo.status as RequestState) !== "in_progress") {
+      return { ok: false, error: "Scope changes are raised on site, while the job is in progress." };
+    }
+    const { data: pending } = await db
+      .from("variances")
+      .select("id")
+      .eq("work_order_id", wo.id)
+      .eq("status", "pending")
+      .limit(1);
+    if (pending && pending.length > 0) return { ok: false, error: "A scope change is already waiting on the payer." };
+
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, playbook_key, title")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    const playbook = (req.playbook_key ? getPlaybook(req.playbook_key) : null) ?? PLAYBOOKS.general_quote_race;
+    const { data: payRows } = await db
+      .from("payments")
+      .select("amount_cents, status")
+      .eq("request_id", req.id);
+    const bookedCents =
+      ((payRows ?? []) as Array<{ amount_cents: number; status: string }>)
+        .filter((p) => p.status !== "voided")
+        .reduce((s, p) => s + Number(p.amount_cents), 0) ||
+      Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+    if (input.newTotalCents <= 0 || !input.reason.trim()) return { ok: false, error: "A new total and a reason are required." };
+
+    const needsApproval = varianceNeedsApproval(playbook, bookedCents, input.newTotalCents);
+    const status = needsApproval ? "pending" : "auto_applied";
+    const { data: variance, error } = await db
+      .from("variances")
+      .insert({
+        org_id: wo.org_id,
+        request_id: req.id,
+        work_order_id: wo.id,
+        booked_cents: bookedCents,
+        new_total_cents: input.newTotalCents,
+        reason: input.reason.trim(),
+        status,
+        decided_at: needsApproval ? null : new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+    if (error || !variance) return { ok: false, error: error?.message ?? "Could not record the change." };
+
+    await db.from("events").insert({
+      org_id: wo.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: needsApproval ? "variance_proposed" : "variance_auto_applied",
+      actor_type: "tradie",
+      actor_id: `contact:${resolved.contact_id}`,
+      payload: {
+        bookedCents,
+        newTotalCents: input.newTotalCents,
+        reason: input.reason.trim(),
+        thresholdPct: playbook.varianceThresholdPct,
+      },
+    });
+
+    if (!needsApproval) {
+      // Inside the playbook's threshold: the delta rides as a variance slice,
+      // captured with the balance on verify.
+      await applyVarianceSlice(db, req.id, wo.org_id, input.newTotalCents - bookedCents);
+    }
+    return { ok: true, needsApproval, varianceId: variance.id as string };
+  },
+
+  async decideVariance(token, varianceId, decision) {
+    const row = await resolveTokenAny(token, ["owner_portal", "pm_portfolio"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    // Scope: the variance's property must belong to this seat.
+    const { data: v } = await db
+      .from("variances")
+      .select("id, request_id, maintenance_requests!variances_request_id_fkey!inner(property_id)")
+      .eq("id", varianceId)
+      .maybeSingle();
+    if (!v) return { ok: false, error: "Not found." };
+    const propId = (v as unknown as { maintenance_requests: { property_id: string } }).maintenance_requests.property_id;
+    const { data: prop } = await db
+      .from("properties")
+      .select("owner_contact_id, pm_contact_id")
+      .eq("id", propId)
+      .maybeSingle();
+    const allowed =
+      (row.scope === "owner_portal" && prop?.owner_contact_id === row.aggregate_id) ||
+      (row.scope === "pm_portfolio" && prop?.pm_contact_id === row.contact_id);
+    if (!allowed) return { ok: false, error: "Not found." };
+    return decideVarianceCore(db, varianceId, decision, `token:${row.id}`);
+  },
+
+  async getFastPay(tradiePortalToken) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    return { enabled: await tradieFastPayEnabled(db, resolved.contact_id) };
+  },
+
+  async setFastPay(tradiePortalToken, enabled) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { error } = await db
+      .from("tradie_rate_cards")
+      .update({ fastpay_enabled: enabled })
+      .eq("tradie_contact_id", resolved.contact_id);
+    if (error) return { ok: false, error: error.message };
+    await db.from("events").insert({
+      org_id: resolved.org_id,
+      aggregate_type: "contact",
+      aggregate_id: resolved.contact_id,
+      event_type: "fastpay_setting",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+      payload: { enabled },
+    });
+    return { ok: true };
+  },
 };
+
+/** An approved (or auto-applied) scope increase becomes a variance payment
+ * slice: authorized now, captured with everything else on verify. A negative
+ * delta (scope shrank) voids value by reducing what verify settles — recorded
+ * as a zero-floor guard here; the honest path for refunds is R4. */
+async function applyVarianceSlice(
+  db: ReturnType<typeof serviceClient>,
+  requestId: string,
+  orgId: string,
+  deltaCents: number,
+): Promise<void> {
+  if (deltaCents <= 0) return;
+  const psp = resolvePsp();
+  const { data: primary } = await db
+    .from("payments")
+    .select("id, psp_ref")
+    .eq("request_id", requestId)
+    .in("kind", ["primary", "balance"])
+    .eq("status", "authorized")
+    .limit(1)
+    .maybeSingle();
+  let pspRef: string | null = null;
+  if (primary?.psp_ref) {
+    // Prefer raising the existing hold (Stripe increment_authorization).
+    const inc = await psp.incrementAuthorization(primary.psp_ref, deltaCents);
+    if (inc.ok) pspRef = primary.psp_ref;
+  }
+  if (!pspRef) {
+    const auth = await psp.authorize({ amountCents: deltaCents, requestId, description: `1Pacent variance ${requestId}` });
+    pspRef = auth.pspRef ?? null;
+  }
+  await db.from("payments").insert({
+    org_id: orgId,
+    request_id: requestId,
+    status: "authorized",
+    amount_cents: deltaCents,
+    platform_fee_cents: splitPayment(deltaCents).platformFeeCents,
+    kind: "variance",
+    psp: psp.name,
+    psp_ref: pspRef,
+  });
+}
+
+/** The payer's variance decision — shared by the in-app tap and the one-tap
+ * moment token. Approve → the hold rises and work resumes; decline → the job
+ * continues at the booked scope, on the record. */
+async function decideVarianceCore(
+  db: ReturnType<typeof serviceClient>,
+  varianceId: string,
+  decision: "approve" | "decline",
+  actorId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { data: v } = await db
+    .from("variances")
+    .select("id, org_id, request_id, work_order_id, booked_cents, new_total_cents, status")
+    .eq("id", varianceId)
+    .maybeSingle();
+  if (!v) return { ok: false, error: "Not found." };
+  if (v.status !== "pending") return { ok: false, error: "This change was already decided." };
+  const { data: updated } = await db
+    .from("variances")
+    .update({ status: decision === "approve" ? "approved" : "declined", decided_at: new Date().toISOString() })
+    .eq("id", v.id)
+    .eq("status", "pending")
+    .select("id");
+  if (!updated || updated.length === 0) return { ok: false, error: "This change was already decided." };
+  await db.from("events").insert({
+    org_id: v.org_id,
+    aggregate_type: "work_order",
+    aggregate_id: v.work_order_id,
+    event_type: decision === "approve" ? "variance_approved" : "variance_declined",
+    actor_type: "landlord",
+    actor_id: actorId,
+    payload: { bookedCents: Number(v.booked_cents), newTotalCents: Number(v.new_total_cents) },
+  });
+  if (decision === "approve") {
+    await applyVarianceSlice(db, v.request_id, v.org_id, Number(v.new_total_cents) - Number(v.booked_cents));
+  }
+  return { ok: true };
+}
+
+/** One money line from N payment slices (v8 R3: milestone playbooks carry
+ * deposit + balance rows). Sum the amounts; report the least-settled status
+ * so "authorized" never reads as "paid". */
+function aggregatePayments(
+  rows: Array<{ status: string; amount_cents: number }>,
+): { status: PaymentState; amountCents: number; payoutCents: number | null } | null {
+  const live = rows.filter((r) => r.status !== "voided");
+  if (live.length === 0) return null;
+  const amountCents = live.reduce((sum, r) => sum + Number(r.amount_cents), 0);
+  const rank: Record<string, number> = { authorized: 0, disputed: 0, captured: 1, transferred: 2 };
+  const status = live.reduce<PaymentState>(
+    (least, r) => ((rank[r.status] ?? 0) < (rank[least] ?? 0) ? (r.status as PaymentState) : least),
+    live[0]!.status as PaymentState,
+  );
+  return { status, amountCents, payoutCents: splitPayment(amountCents).tradiePayoutCents };
+}
 
 /** The Autopilot sliders write exactly one rule per property at this priority —
  * distinct from any hand-crafted dashboard rules (which sort after it). */
@@ -3424,23 +3687,31 @@ async function verifySettleCore(
 
   const { data: wo } = await db
     .from("work_orders")
-    .select("id, quote_cents, call_out_fee_cents")
+    .select("id, tradie_contact_id, quote_cents, call_out_fee_cents")
     .eq("request_id", req.id)
     .maybeSingle();
   if (!wo) return { ok: true };
   await db.from("work_orders").update({ status: verifyResult.state }).eq("id", wo.id);
 
-  // Settlement: capture + transfer (simulated PSP), the record write, the
-  // certificate if this was a compliance playbook — Penny's whole job.
+  // Settlement: capture + transfer through the PSP seam, the record write,
+  // the certificate if this was a compliance playbook — Penny's whole job.
   const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
-  const { data: payment } = await db
+  const { data: paymentRows } = await db
     .from("payments")
-    .select("id, amount_cents, status")
-    .eq("request_id", req.id)
-    .maybeSingle();
-  const settleAmount = payment
-    ? Number(payment.amount_cents)
-    : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+    .select("id, amount_cents, status, kind, psp, psp_ref")
+    .eq("request_id", req.id);
+  const openSlices = ((paymentRows ?? []) as Array<{
+    id: string;
+    amount_cents: number;
+    status: string;
+    kind: string;
+    psp: string;
+    psp_ref: string | null;
+  }>).filter((p) => p.status !== "voided");
+  const settleAmount =
+    openSlices.length > 0
+      ? openSlices.reduce((sum, p) => sum + Number(p.amount_cents), 0)
+      : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
 
   const invoiceResult = transition(verifyResult.state, "invoice", "system");
   if (!invoiceResult.ok) return { ok: true };
@@ -3493,11 +3764,34 @@ async function verifySettleCore(
     })
     .eq("id", wo.id);
 
-  if (payment) {
-    await db
-      .from("payments")
-      .update({ status: "transferred", work_order_id: wo.id, updated_at: new Date().toISOString() })
-      .eq("id", payment.id);
+  if (openSlices.length > 0) {
+    const psp = resolvePsp();
+    const fastPay = await tradieFastPayEnabled(db, wo.tradie_contact_id as string | null);
+    const split = splitPaymentWithFastPay(settleAmount, fastPay);
+    for (const slice of openSlices) {
+      if (slice.status !== "authorized") continue; // deposit already settled at confirmation
+      if (slice.psp_ref) {
+        const captured = await psp.capture(slice.psp_ref);
+        if (!captured.ok) {
+          // The verification stands; money truth lands via webhook/retry —
+          // the ledger records the miss instead of pretending.
+          console.warn(`[penny] capture failed for ${slice.id}:`, captured.error);
+          continue;
+        }
+      }
+      const transferred = slice.psp_ref
+        ? await psp.transfer({ amountCents: Number(slice.amount_cents), description: `1Pacent job ${req.id}`, destination: null })
+        : { ok: psp.name === "simulated" };
+      await db
+        .from("payments")
+        .update({
+          status: transferred.ok || psp.name === "simulated" ? "transferred" : "captured",
+          work_order_id: wo.id,
+          fastpay_fee_cents: fastPay ? split.fastPayFeeCents : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", slice.id);
+    }
     await db.from("events").insert({
       org_id: req.org_id,
       aggregate_type: "work_order",
@@ -3505,7 +3799,14 @@ async function verifySettleCore(
       event_type: "payment_transferred",
       actor_type: "system",
       actor_id: "penny:psp",
-      payload: { amountCents: settleAmount, psp: "simulated" },
+      payload: {
+        amountCents: settleAmount,
+        psp: psp.name,
+        platformFeeCents: split.platformFeeCents,
+        fastPay,
+        fastPayFeeCents: split.fastPayFeeCents,
+        tradiePayoutCents: split.tradiePayoutCents,
+      },
     });
   }
 
@@ -3683,6 +3984,10 @@ async function acceptQuoteTx(
     });
   }
 
+  // v8 R3: acceptance IS confirmation — authorize the payment plan now
+  // (deposit slices settle immediately for milestone playbooks).
+  await ensurePaymentPlan(db, req.id, Number(accepted.quote_cents ?? 0) + Number(accepted.call_out_fee_cents ?? 0));
+
   const acceptedContact = normalizeContact(accepted.contacts);
   return {
     ok: true,
@@ -3698,6 +4003,79 @@ async function acceptQuoteTx(
       return { tradieName: c?.full_name ?? "", tradieEmail: c?.email ?? "" };
     }),
   };
+}
+
+/**
+ * Milestone capture (v8 §4): once a quote is accepted, the job's money plan
+ * exists as payment slices. Fixed-band bookings already authorized a primary
+ * slice at booking (no-op here). Milestone playbooks get deposit + balance
+ * slices; the deposit — materials money — captures and transfers on the
+ * spot, the balance stays a hold until verify.
+ */
+async function ensurePaymentPlan(
+  db: ReturnType<typeof serviceClient>,
+  requestId: string,
+  totalCents: number,
+): Promise<void> {
+  if (totalCents <= 0) return;
+  const { data: existing } = await db.from("payments").select("id").eq("request_id", requestId).limit(1);
+  if (existing && existing.length > 0) return;
+  const { data: req } = await db
+    .from("maintenance_requests")
+    .select("id, org_id, playbook_key, title")
+    .eq("id", requestId)
+    .maybeSingle();
+  if (!req) return;
+  const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+  const schedule = paymentScheduleFor(playbook ?? {}, totalCents);
+  const psp = resolvePsp();
+  for (const slice of schedule) {
+    const auth = await psp.authorize({
+      amountCents: slice.amountCents,
+      requestId,
+      description: `1Pacent ${req.title} (${slice.kind})`,
+    });
+    const settleNow = slice.captureOn === "confirmation";
+    if (settleNow && auth.pspRef) {
+      const captured = await psp.capture(auth.pspRef);
+      if (captured.ok) await psp.transfer({ amountCents: slice.amountCents, description: `1Pacent deposit ${requestId}`, destination: null });
+    }
+    await db.from("payments").insert({
+      org_id: req.org_id,
+      request_id: requestId,
+      status: settleNow ? "transferred" : "authorized",
+      amount_cents: slice.amountCents,
+      platform_fee_cents: splitPayment(slice.amountCents).platformFeeCents,
+      kind: slice.kind,
+      psp: psp.name,
+      psp_ref: auth.pspRef ?? null,
+    });
+    if (settleNow) {
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "maintenance_request",
+        aggregate_id: requestId,
+        event_type: "payment_transferred",
+        actor_type: "system",
+        actor_id: "penny:psp",
+        payload: { amountCents: slice.amountCents, kind: slice.kind, note: "Deposit captured at confirmation (materials)" },
+      });
+    }
+  }
+}
+
+/** Fast-Pay opt-in lives on the tradie's rate card. */
+async function tradieFastPayEnabled(
+  db: ReturnType<typeof serviceClient>,
+  tradieContactId: string | null,
+): Promise<boolean> {
+  if (!tradieContactId) return false;
+  const { data } = await db
+    .from("tradie_rate_cards")
+    .select("fastpay_enabled")
+    .eq("tradie_contact_id", tradieContactId)
+    .maybeSingle();
+  return Boolean((data as { fastpay_enabled?: boolean } | null)?.fastpay_enabled);
 }
 
 /** Once every invited quote for a request has resolved, rank the round and

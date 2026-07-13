@@ -1,5 +1,6 @@
 import { getData } from "@/lib/data";
 import { Panel, PulseTopBar } from "@/components/pulse/shell";
+import { DataPackCard } from "./datapack-card";
 
 export const dynamic = "force-dynamic";
 
@@ -128,6 +129,28 @@ export default async function RecordPage({
             </div>
           )}
         </Panel>
+
+        {/* The attestation the record earns (v8 R3): verifiable, zero typing. */}
+        {record.history.length > 0 && (
+          <Panel>
+            <p className="mb-2 text-[10px] uppercase tracking-widest text-white/40">Maintenance attestation</p>
+            <p className="text-sm text-white/80">
+              {record.history.length} job{record.history.length === 1 ? "" : "s"} completed by licence-verified
+              tradies, each with evidence on the ledger
+              {record.warranties.length > 0
+                ? `, ${record.warranties.length} warranty${record.warranties.length === 1 ? "" : "ies"} live`
+                : ""}
+              . Compliance standing: {record.compliance.overall === "green" ? "all green" : record.compliance.overall}.
+            </p>
+            <p className="mt-1.5 text-[10px] text-white/40">
+              Every line above traces to a ledger event with a human actor — nothing here was typed in. Shareable
+              with insurers and buyers only when the owner says so.
+            </p>
+          </Panel>
+        )}
+
+        {/* Money-bearing product surfaces are the payer's business. */}
+        {record.spend12moCents !== null && <DataPackCard token={token} propertyId={record.propertyId} />}
       </div>
     </>
   );

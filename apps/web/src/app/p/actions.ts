@@ -229,3 +229,53 @@ export async function dispatchBatchAction(token: string, input: { requirementKey
   if (result.ok) await poke(tradeTopic());
   return result;
 }
+
+// ——— v8 R3: Real money & the second orbit ———
+
+export async function proposeVarianceAction(
+  token: string,
+  workOrderId: string,
+  requestId: string,
+  input: { newTotalCents: number; reason: string },
+) {
+  const result = await (await getData()).proposeVariance(token, workOrderId, input);
+  if (result.ok) {
+    await poke(jobTopic(requestId));
+    if (result.needsApproval && result.varianceId) {
+      // Work pauses; the payer decides — from the lock screen if they like.
+      await pushMoment(requestId, "payer", {
+        title: "Price changed on site",
+        body: `${input.reason} — new total $${Math.round(input.newTotalCents / 100)}. Approve to continue?`,
+        path: `job/${requestId}`,
+        oneTap: {
+          kind: "decide_variance",
+          choices: [
+            { choice: "approve", label: "Approve" },
+            { choice: "decline", label: "Keep booked scope" },
+          ],
+          meta: { varianceId: result.varianceId },
+        },
+        tag: `variance-${requestId}`,
+      });
+    }
+  }
+  return result;
+}
+
+export async function decideVarianceAction(token: string, varianceId: string, requestId: string, decision: "approve" | "decline") {
+  const result = await (await getData()).decideVariance(token, varianceId, decision);
+  if (result.ok) await poke(jobTopic(requestId));
+  return result;
+}
+
+export async function getFastPayAction(token: string) {
+  return (await getData()).getFastPay(token);
+}
+
+export async function setFastPayAction(token: string, enabled: boolean) {
+  return (await getData()).setFastPay(token, enabled);
+}
+
+export async function generateDataPackAction(token: string, propertyId: string) {
+  return (await getData()).generateReport(token, "property_data_pack", propertyId);
+}

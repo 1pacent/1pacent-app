@@ -8,8 +8,10 @@ import type { JobProjection } from "@/lib/data-types";
 import {
   addEvidenceAction,
   completeJobAction,
+  decideVarianceAction,
   getJobAction,
   onMyWayAction,
+  proposeVarianceAction,
   startJobPulseAction,
   verifySettleAction,
 } from "../../../actions";
@@ -34,6 +36,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   const [job, setJob] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   const [gateForCamera, setGateForCamera] = useState<string>("before");
+  const [varianceOpen, setVarianceOpen] = useState(false);
+  const [varianceTotal, setVarianceTotal] = useState("");
+  const [varianceReason, setVarianceReason] = useState("");
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -140,6 +145,57 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
         </div>
       )}
 
+      {/* The variance protocol (v8 R3): scope changed on site. */}
+      {job.variance && job.variance.status === "pending" && (
+        <div className="hivis-ping-in rounded-2xl border border-hivis-400/60 bg-field-900 p-4">
+          <p className="font-bold text-white">Price changed on site</p>
+          <p className="mt-1 text-xs text-white/50">
+            {job.variance.reason} — {dollars(job.variance.bookedCents)} booked → {dollars(job.variance.newTotalCents)} proposed.
+          </p>
+          {job.actions.includes("decide_variance") ? (
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => {
+                  const id = job.variance!.id;
+                  act(() => decideVarianceAction(token, id, job.requestId, "approve"));
+                }}
+                className="flex-1 rounded-xl bg-hivis-400 px-4 py-2.5 text-sm font-bold text-field-950 active:scale-[0.97]"
+              >
+                Approve {dollars(job.variance.newTotalCents)}
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => {
+                  const id = job.variance!.id;
+                  act(() => decideVarianceAction(token, id, job.requestId, "decline"));
+                }}
+                className="flex-1 rounded-xl border border-field-line px-4 py-2.5 text-sm font-semibold text-white/60 active:scale-[0.97]"
+              >
+                Keep booked scope
+              </button>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-white/40">
+              {job.viewer === "tradie" ? "Waiting on the payer — work pauses until they decide." : "The payer is deciding."}
+            </p>
+          )}
+        </div>
+      )}
+      {job.variance && job.variance.status !== "pending" && job.arcStep !== "paid" && (
+        <p className="text-xs text-white/40">
+          Scope change {dollars(job.variance.newTotalCents)}:{" "}
+          {job.variance.status === "auto_applied"
+            ? "auto-approved inside the playbook's threshold"
+            : job.variance.status === "approved"
+              ? "approved by the payer"
+              : "declined — job continues at the booked scope"}
+          .
+        </p>
+      )}
+
       {error && <p className="rounded-xl bg-red-500/15 px-3 py-2 text-xs text-red-300">{error}</p>}
 
       {/* The one action that matters, per viewer per moment */}
@@ -203,6 +259,60 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                 )}
               </>
             )}
+            {job.actions.includes("propose_variance") && !varianceOpen && (
+              <GhostButton disabled={pending} onClick={() => setVarianceOpen(true)}>
+                Price changed on site?
+              </GhostButton>
+            )}
+            {job.actions.includes("propose_variance") && varianceOpen && (
+              <div className="rounded-2xl border border-field-line bg-field-900 p-4">
+                <p className="text-sm font-bold text-white">New total for the whole job</p>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  placeholder="$ new total"
+                  value={varianceTotal}
+                  onChange={(e) => setVarianceTotal(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
+                />
+                <input
+                  type="text"
+                  placeholder="What changed? (the payer reads this)"
+                  value={varianceReason}
+                  onChange={(e) => setVarianceReason(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
+                />
+                <div className="mt-3 flex gap-2">
+                  <HiVisButton
+                    disabled={pending || !varianceTotal || !varianceReason.trim()}
+                    onClick={() => {
+                      const cents = Math.round(Number(varianceTotal) * 100);
+                      act(async () => {
+                        const r = await proposeVarianceAction(token, wo, job.requestId, {
+                          newTotalCents: cents,
+                          reason: varianceReason.trim(),
+                        });
+                        if (r.ok) {
+                          setVarianceOpen(false);
+                          setVarianceTotal("");
+                          setVarianceReason("");
+                        }
+                        return r;
+                      });
+                    }}
+                  >
+                    Send to payer
+                  </HiVisButton>
+                  <GhostButton disabled={pending} onClick={() => setVarianceOpen(false)}>
+                    Cancel
+                  </GhostButton>
+                </div>
+                <p className="mt-2 text-[10px] text-white/40">
+                  Small changes inside the playbook&apos;s threshold apply instantly; bigger ones pause the job for a one-tap payer decision.
+                </p>
+              </div>
+            )}
             {job.arcStep === "done" && (
               <p className="text-center text-xs text-white/40">
                 Waiting on the customer&apos;s tap — you&apos;ll be paid the moment they verify.
@@ -248,5 +358,3 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   );
 }
 
-// GhostButton imported for future use in variance protocol (R2).
-void GhostButton;

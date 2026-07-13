@@ -17,7 +17,12 @@ export interface MomentPush {
   /** Path relative to the recipient's home (their token page), e.g. a job. */
   path?: string;
   /** One-tap decision: minted per recipient, burns on use. */
-  oneTap?: { kind: MomentActionKind; choices: Array<{ choice: string; label: string }>; actorType?: "tenant" | "agency_user" };
+  oneTap?: {
+    kind: MomentActionKind;
+    choices: Array<{ choice: string; label: string }>;
+    actorType?: "tenant" | "agency_user";
+    meta?: Record<string, unknown>;
+  };
   tag?: string;
 }
 
@@ -53,7 +58,10 @@ export async function pushMoment(requestId: string, role: MomentRole, moment: Mo
           const minted = await data.mintMomentAction(requestId, {
             kind: moment.oneTap.kind,
             contactId: target.contactId,
-            meta: moment.oneTap.actorType ? { actorType: moment.oneTap.actorType } : undefined,
+            meta: {
+              ...(moment.oneTap.meta ?? {}),
+              ...(moment.oneTap.actorType ? { actorType: moment.oneTap.actorType } : {}),
+            },
           });
           if (minted.ok && minted.path) {
             actUrl = minted.path;

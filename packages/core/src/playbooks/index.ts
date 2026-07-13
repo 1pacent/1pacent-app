@@ -47,6 +47,9 @@ export interface Playbook {
   varianceThresholdPct: number;
   /** Typical on-site duration, drives slot length. */
   typicalMinutes: number;
+  /** Multi-day playbooks capture a deposit at confirmation, balance on
+   * verify (v8 §4) — absent means one capture-on-verify slice. */
+  milestones?: { depositPct: number };
 }
 
 export const PLAYBOOKS: Record<PlaybookKey, Playbook> = {
@@ -78,6 +81,7 @@ export const PLAYBOOKS: Record<PlaybookKey, Playbook> = {
     assetLabel: "Hot water system",
     varianceThresholdPct: 15,
     typicalMinutes: 240,
+    milestones: { depositPct: 30 },
   },
   gas_check: {
     key: "gas_check",

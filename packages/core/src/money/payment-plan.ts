@@ -54,3 +54,58 @@ export function bookableAmountFromBand(lowCents: Cents, highCents: Cents): Cents
   if (highCents < lowCents) throw new RangeError("band inverted");
   return Math.round((lowCents + highCents) / 2 / 100) * 100;
 }
+
+/* ——— v8 R3: milestone capture, variance rows, Fast-Pay ——— */
+
+/** Which slice of the job's money a payments row represents. */
+export const PAYMENT_KINDS = ["primary", "deposit", "balance", "variance"] as const;
+export type PaymentKind = (typeof PAYMENT_KINDS)[number];
+
+export interface PaymentScheduleItem {
+  kind: PaymentKind;
+  amountCents: Cents;
+  /** When Penny may CAPTURE this slice. Authorization always precedes it. */
+  captureOn: "verify" | "confirmation";
+}
+
+/**
+ * Milestone capture (Developer Brief v8 §4): multi-day playbooks capture a
+ * deposit at confirmation (materials) and the balance on verify — never one
+ * long hold. Single-visit playbooks stay one capture-on-verify slice.
+ * Deliberately consumer-repair scope: VIC's domestic-building deposit caps
+ * are a hard boundary; depositPct here must stay defensible for repairs.
+ */
+export function paymentScheduleFor(
+  playbook: { milestones?: { depositPct: number } },
+  totalCents: Cents,
+): PaymentScheduleItem[] {
+  assertCents(totalCents);
+  const depositPct = playbook.milestones?.depositPct ?? 0;
+  if (depositPct <= 0 || totalCents === 0) {
+    return [{ kind: "primary", amountCents: totalCents, captureOn: "verify" }];
+  }
+  if (depositPct >= 100) throw new RangeError("depositPct must be < 100");
+  const deposit = Math.round((totalCents * depositPct) / 100 / 100) * 100;
+  return [
+    { kind: "deposit", amountCents: deposit, captureOn: "confirmation" },
+    { kind: "balance", amountCents: totalCents - deposit, captureOn: "verify" },
+  ];
+}
+
+/** Fast-Pay (Monetisation.md): the tradie chooses money-today; the factoring
+ * fee comes off their payout, the platform fee is unchanged. */
+export const FASTPAY_FEE_BPS = 200; // 2%
+
+export function splitPaymentWithFastPay(
+  amountCents: Cents,
+  fastPay: boolean,
+): { platformFeeCents: Cents; fastPayFeeCents: Cents; tradiePayoutCents: Cents } {
+  const base = splitPayment(amountCents);
+  if (!fastPay) return { ...base, fastPayFeeCents: 0 };
+  const fastPayFeeCents = Math.round((amountCents * FASTPAY_FEE_BPS) / 10_000);
+  return {
+    platformFeeCents: base.platformFeeCents,
+    fastPayFeeCents,
+    tradiePayoutCents: base.tradiePayoutCents - fastPayFeeCents,
+  };
+}
