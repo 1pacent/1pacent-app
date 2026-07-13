@@ -2,7 +2,9 @@ import Link from "next/link";
 import { getData } from "@/lib/data";
 import { Panel, PulseTopBar } from "@/components/pulse/shell";
 import { LiveRefresh } from "@/components/pulse/live-refresh";
+import { EnablePush } from "@/components/pulse/enable-push";
 import { MomentCard } from "./moment-card";
+import { AutopilotCard } from "./autopilot-card";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +30,11 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
     );
   }
 
-  const [cards, spending] = await Promise.all([data.getCanvasCards(token), data.getSpendingSummary(token, 12)]);
+  const [cards, spending, autopilot] = await Promise.all([
+    data.getCanvasCards(token),
+    data.getSpendingSummary(token, 12),
+    data.getAutopilot(token),
+  ]);
   const moments = cards.filter((c) => c.state === "needs_you");
   const liveJobs = ctx.properties
     .flatMap((p) => p.requests.map((r) => ({ ...r, address: p.address })))
@@ -67,6 +73,10 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
             </div>
           )}
         </div>
+
+        {/* Autopilot — configure once, decide from the lock screen after. */}
+        {autopilot && <AutopilotCard token={token} initial={autopilot} />}
+        <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />
 
         {/* Live jobs */}
         {liveJobs.length > 0 && (

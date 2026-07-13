@@ -3,6 +3,7 @@ import {
   assessAssetHorizon,
   bookableAmountFromBand,
   buildObligationsCalendar,
+  buildRun,
   checkPlaybookGate,
   computeBatchableCompliance,
   decideApproval,
@@ -37,6 +38,7 @@ import {
   type RequestCategory,
   type RequestEvent,
   type RequestState,
+  type RunJob,
   type WarrantyCandidate,
 } from "@1pacent/core";
 import type {
@@ -53,6 +55,13 @@ import type {
   JobOfferView,
   JobProjection,
   JobViewer,
+  AutopilotInput,
+  AutopilotView,
+  MomentActionKind,
+  MomentRole,
+  PushSubscriptionInput,
+  PushTarget,
+  TradieRunView,
   AutoQuoteSettingsView,
   CanvasCard,
   ComplianceStatusView,
@@ -512,6 +521,24 @@ const propertyAssets: DemoPropertyAsset[] = [
 ];
 let demoAssetSeq = 0;
 
+/** v8 R2: web-push subscriptions (real browser endpoints — demo mode pushes
+ * for real when VAPID keys are configured). */
+interface DemoPushSubscription {
+  contactId: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  homePath: string | null;
+}
+const pushSubscriptions: DemoPushSubscription[] = [];
+
+/** Parity with supabase-data: sliders write one rule per property here. */
+const AUTOPILOT_RULE_PRIORITY = -100;
+const AUTOPILOT_SAFETY_CATEGORIES: RequestCategory[] = [
+  "gas_leak",
+  "dangerous_electrical_fault",
+  "safety_device_fault_smoke_alarm_or_pool_barrier",
+];
+
 interface DemoApprovalPolicyRule {
   id: string;
   propertyId: string;
@@ -533,8 +560,19 @@ type DemoTokenScope =
   | "tradie_portal"
   | "pm_portfolio"
   | "tradie_lead_intake"
-  | "owner_portal";
-const demoTokens: Record<string, { scope: DemoTokenScope; aggregateId: string; contactId?: string }> = {
+  | "owner_portal"
+  | "moment_action";
+const demoTokens: Record<
+  string,
+  {
+    scope: DemoTokenScope;
+    aggregateId: string;
+    contactId?: string;
+    /** moment_action only: the one decision this token signs. */
+    payload?: { kind: MomentActionKind; actorType?: "tenant" | "agency_user" };
+    usedAt?: string;
+  }
+> = {
   "demo-intake": { scope: "tenant_intake", aggregateId: "prop-fitzroy", contactId: "contact-tenant-1" },
   "demo-approval": { scope: "landlord_approval", aggregateId: "req-fence" },
   "demo-tradie-portal": {
@@ -2190,78 +2228,10 @@ export const demoData: DataSource = {
         : properties.some((p) => p.id === request.propertyId && p.ownerContactId === resolved.aggregateId);
     if (!inScope) return { ok: false as const, error: "Request not found." };
 
-    // The human verification — the audit point.
-    const current = requestState(request);
-    const verifyResult = transition(current, "verify", resolved.scope === "tenant_intake" ? "tenant" : "agency_user");
-    if (!verifyResult.ok) return { ok: false as const, error: `Cannot verify from state "${current}".` };
-    const now = new Date().toISOString();
-    request.events.push({
-      eventType: "verify",
+    return demoVerifySettle(request, {
       actorType: resolved.scope === "tenant_intake" ? "tenant" : "agency_user",
       actorId: `token:${token}`,
-      at: now,
     });
-
-    const wo = workOrders.find((w) => w.requestId === request.id);
-    if (!wo) return { ok: true as const };
-    wo.status = verifyResult.state;
-
-    // Settlement: capture + transfer (simulated PSP), the record write, the
-    // certificate if this was a compliance playbook — Penny's whole job.
-    const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
-    const payment = payments.find((p) => p.requestId === request.id);
-    const settleAmount = payment?.amountCents ?? (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
-
-    const invoiceResult = transition(verifyResult.state, "invoice", "system");
-    if (invoiceResult.ok) {
-      request.events.push({
-        eventType: "invoice",
-        actorType: "system",
-        actorId: "penny:capture",
-        at: now,
-        note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}`,
-      });
-      wo.invoiceCents = settleAmount;
-      wo.invoicedAt = now;
-
-      // The Address Record write.
-      if (playbook) {
-        let asset = propertyAssets.find(
-          (a) => a.propertyId === request.propertyId && a.category === playbook.category && a.label === playbook.assetLabel,
-        );
-        if (!asset) {
-          asset = {
-            id: `asset-${++demoAssetSeq}`,
-            propertyId: request.propertyId,
-            category: playbook.category,
-            label: playbook.assetLabel,
-            installedAt: null,
-          };
-          propertyAssets.push(asset);
-        }
-        wo.assetId = asset.id;
-        if (playbook.warrantyDefaultMonths > 0) {
-          wo.warrantyExpiresAt = new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString();
-        }
-        if (playbook.compliance) {
-          const property = properties.find((p) => p.id === request.propertyId);
-          property?.evidence.push({ requirementKey: playbook.compliance.filesCertificate, completedAt: new Date() });
-        }
-      }
-
-      if (payment) {
-        payment.status = "captured";
-        payment.workOrderId = wo.id;
-        payment.status = "transferred"; // simulated PSP: same-day payout
-      }
-
-      const paidResult = transition(invoiceResult.state, "record_payment", "system");
-      const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
-      if (paidResult.ok) request.events.push({ eventType: "record_payment", actorType: "system", actorId: "penny:psp", at: now });
-      if (closedResult?.ok) request.events.push({ eventType: "close", actorType: "system", actorId: "penny:psp", at: now });
-      wo.status = closedResult?.ok ? closedResult.state : invoiceResult.state;
-    }
-    return { ok: true as const };
   },
 
   async getJobProjection(token, requestId): Promise<JobProjection | null> {
@@ -2407,7 +2377,271 @@ export const demoData: DataSource = {
       })
       .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   },
+
+  // ——— v8 R2: Autopilot & the Deck ———
+
+  async savePushSubscription(token: string, input: PushSubscriptionInput) {
+    const resolved = resolveDemoToken(token);
+    if (!resolved) return { ok: false, error: "This link isn't active." };
+    const contactId = resolved.contactId ?? resolved.aggregateId;
+    if (!contactId) return { ok: false, error: "This link has no person attached." };
+    const existing = pushSubscriptions.find((s) => s.endpoint === input.endpoint);
+    if (existing) {
+      existing.contactId = contactId;
+      existing.keys = input.keys;
+      existing.homePath = input.homePath;
+    } else {
+      pushSubscriptions.push({ contactId, endpoint: input.endpoint, keys: input.keys, homePath: input.homePath });
+    }
+    return { ok: true };
+  },
+
+  async getPushTargets(requestId: string, role: MomentRole): Promise<PushTarget[]> {
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return [];
+    const property = properties.find((p) => p.id === request.propertyId);
+    const contactIds: string[] = [];
+    if (role === "payer" && property?.ownerContactId) contactIds.push(property.ownerContactId);
+    if (role === "occupant") {
+      // The demo org's single tenancy: Priya at Fitzroy.
+      if (request.propertyId === "prop-fitzroy") contactIds.push("contact-tenant-1");
+    }
+    if (role === "pm" && property?.pmContactId) contactIds.push(property.pmContactId);
+    if (role === "assigned_tradie") {
+      const wo = workOrders.find((w) => w.requestId === requestId);
+      if (wo) contactIds.push(wo.tradieContactId);
+    }
+    if (role === "tradie_offered") {
+      for (const q of quotes.filter((q) => q.requestId === requestId && q.status === "invited")) {
+        contactIds.push(q.tradieContactId);
+      }
+    }
+    return pushSubscriptions
+      .filter((s) => contactIds.includes(s.contactId))
+      .map((s) => ({
+        contactId: s.contactId,
+        name: contacts.find((c) => c.id === s.contactId)?.fullName ?? "",
+        endpoint: s.endpoint,
+        keys: s.keys,
+        homePath: s.homePath,
+      }));
+  },
+
+  async mintMomentAction(
+    requestId: string,
+    input: { kind: MomentActionKind; contactId: string | null; meta?: Record<string, unknown> },
+  ) {
+    if (!requests.some((r) => r.id === requestId)) return { ok: false, error: "Request not found." };
+    const token = issueDemoToken("moment_action", requestId, input.contactId ?? undefined);
+    demoTokens[token]!.payload = {
+      kind: input.kind,
+      actorType: (input.meta?.actorType as "tenant" | "agency_user" | undefined) ?? undefined,
+    };
+    return { ok: true, path: `/api/act/${token}` };
+  },
+
+  async executeMomentAction(rawToken: string, choice: string) {
+    const resolved = demoTokens[rawToken];
+    if (!resolved || resolved.scope !== "moment_action" || resolved.usedAt) {
+      return { ok: false, error: "This decision link has expired or was already used." };
+    }
+    resolved.usedAt = new Date().toISOString(); // burn first — a raced second tap must lose
+    const requestId = resolved.aggregateId;
+    const kind = resolved.payload?.kind;
+
+    if (kind === "approve_request") {
+      if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
+      const result = decideByRequestIdInternal(requestId, choice);
+      return result.ok
+        ? { ok: true, label: choice === "approve" ? "Approved" : "Declined", requestId }
+        : { ok: false, error: result.error };
+    }
+
+    if (kind === "verify_job") {
+      const request = requests.find((r) => r.id === requestId);
+      if (!request) return { ok: false, error: "Request not found." };
+      const result = demoVerifySettle(request, {
+        actorType: resolved.payload?.actorType ?? "agency_user",
+        actorId: `moment:${rawToken.slice(0, 12)}`,
+      });
+      return result.ok ? { ok: true, label: "Verified — payment released", requestId } : { ok: false, error: result.error };
+    }
+
+    if (kind === "decide_variance") {
+      return { ok: false, error: "Variance decisions land with the next release." };
+    }
+    return { ok: false, error: "Unknown decision kind." };
+  },
+
+  async getAutopilot(ownerToken: string): Promise<AutopilotView | null> {
+    const resolved = resolveDemoToken(ownerToken);
+    if (resolved?.scope !== "owner_portal") return null;
+    const owned = properties.filter((p) => p.ownerContactId === resolved.aggregateId);
+    const rules = approvalPolicyRules.filter(
+      (r) => r.priority === AUTOPILOT_RULE_PRIORITY && owned.some((p) => p.id === r.propertyId),
+    );
+    const active = rules.find((r) => r.enabled) ?? rules[0];
+    return {
+      enabled: Boolean(active?.enabled),
+      maxTotalCents: active?.maxTotalCents ?? 50_000,
+      minTrustScore: active?.minTrustScore ?? 60,
+      safetyCategories: active && active.excludeCategories.length === 0 ? [] : AUTOPILOT_SAFETY_CATEGORIES,
+      propertiesCovered: owned.length,
+    };
+  },
+
+  async setAutopilot(ownerToken: string, input: AutopilotInput) {
+    const resolved = resolveDemoToken(ownerToken);
+    if (resolved?.scope !== "owner_portal") return { ok: false, error: "This link isn't active." };
+    const owned = properties.filter((p) => p.ownerContactId === resolved.aggregateId);
+    if (owned.length === 0) return { ok: false, error: "No properties on this seat." };
+    for (const prop of owned) {
+      const idx = approvalPolicyRules.findIndex(
+        (r) => r.propertyId === prop.id && r.priority === AUTOPILOT_RULE_PRIORITY,
+      );
+      if (idx >= 0) approvalPolicyRules.splice(idx, 1);
+      approvalPolicyRules.push({
+        id: `rule-${++demoPolicyRuleSeq}`,
+        propertyId: prop.id,
+        priority: AUTOPILOT_RULE_PRIORITY,
+        maxTotalCents: input.maxTotalCents,
+        minTrustScore: input.minTrustScore,
+        excludeCategories: input.safetyOn ? [...AUTOPILOT_SAFETY_CATEGORIES] : [],
+        enabled: input.enabled,
+      });
+    }
+    return { ok: true };
+  },
+
+  async getTradieRun(tradiePortalToken: string): Promise<TradieRunView | null> {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
+    const mine = workOrders.filter(
+      (w) => w.tradieContactId === resolved.contactId && ["scheduled", "in_progress"].includes(w.status),
+    );
+    const jobs: RunJob[] = [];
+    const meta = new Map<string, { address: string; state: RequestState; slotLabel: string | null }>();
+    for (const wo of mine) {
+      const request = requests.find((r) => r.id === wo.requestId);
+      if (!request) continue;
+      const property = properties.find((p) => p.id === request.propertyId);
+      const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+      const startIso = wo.scheduledStartAt ?? request.bookedStartAt ?? null;
+      const endIso = wo.scheduledEndAt ?? request.bookedEndAt ?? null;
+      jobs.push({
+        workOrderId: wo.id,
+        requestId: request.id,
+        title: request.title,
+        address: property?.address ?? "",
+        suburb: property?.suburb ?? "",
+        slotStartAt: startIso ? new Date(startIso) : null,
+        slotEndAt: endIso ? new Date(endIso) : null,
+        typicalMinutes: playbook?.typicalMinutes ?? 90,
+        urgent: isUrgentCategory(request.category),
+      });
+      meta.set(wo.id, {
+        address: property ? `${property.address}, ${property.suburb}` : "",
+        state: requestState(request),
+        slotLabel: startIso ? formatSlot({ startAt: new Date(startIso), endAt: new Date(endIso ?? startIso) }) : null,
+      });
+    }
+    const run = buildRun(jobs, { dayStart: new Date() });
+    return {
+      legs: run.legs.map((l) => ({
+        workOrderId: l.job.workOrderId,
+        requestId: l.job.requestId,
+        title: l.job.title,
+        address: meta.get(l.job.workOrderId)?.address ?? l.job.address,
+        suburb: l.job.suburb,
+        travelMinutes: l.travelMinutes,
+        arriveAt: l.arriveAt.toISOString(),
+        departAt: l.departAt.toISOString(),
+        conflict: l.conflict,
+        slotLabel: meta.get(l.job.workOrderId)?.slotLabel ?? null,
+        state: meta.get(l.job.workOrderId)?.state ?? "scheduled",
+      })),
+      totalTravelMinutes: run.totalTravelMinutes,
+      totalOnSiteMinutes: run.totalOnSiteMinutes,
+      calendarBusy: [], // external calendars are a live-stack (Supabase) concern
+    };
+  },
 };
+
+// ——— v8 R2 helpers ———
+
+/** The human verification + Penny's settlement — shared by the Job Screen's
+ * verify tap and one-tap moment actions (Supabase parity: verifySettleCore). */
+function demoVerifySettle(
+  request: DemoRequest,
+  actor: { actorType: "tenant" | "agency_user"; actorId: string },
+): { ok: true } | { ok: false; error: string } {
+  const current = requestState(request);
+  const verifyResult = transition(current, "verify", actor.actorType);
+  if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${current}".` };
+  const now = new Date().toISOString();
+  request.events.push({ eventType: "verify", actorType: actor.actorType, actorId: actor.actorId, at: now });
+
+  const wo = workOrders.find((w) => w.requestId === request.id);
+  if (!wo) return { ok: true };
+  wo.status = verifyResult.state;
+
+  // Settlement: capture + transfer (simulated PSP), the record write, the
+  // certificate if this was a compliance playbook — Penny's whole job.
+  const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+  const payment = payments.find((p) => p.requestId === request.id);
+  const settleAmount = payment?.amountCents ?? (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+
+  const invoiceResult = transition(verifyResult.state, "invoice", "system");
+  if (invoiceResult.ok) {
+    request.events.push({
+      eventType: "invoice",
+      actorType: "system",
+      actorId: "penny:capture",
+      at: now,
+      note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}`,
+    });
+    wo.invoiceCents = settleAmount;
+    wo.invoicedAt = now;
+
+    // The Address Record write.
+    if (playbook) {
+      let asset = propertyAssets.find(
+        (a) => a.propertyId === request.propertyId && a.category === playbook.category && a.label === playbook.assetLabel,
+      );
+      if (!asset) {
+        asset = {
+          id: `asset-${++demoAssetSeq}`,
+          propertyId: request.propertyId,
+          category: playbook.category,
+          label: playbook.assetLabel,
+          installedAt: null,
+        };
+        propertyAssets.push(asset);
+      }
+      wo.assetId = asset.id;
+      if (playbook.warrantyDefaultMonths > 0) {
+        wo.warrantyExpiresAt = new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString();
+      }
+      if (playbook.compliance) {
+        const property = properties.find((p) => p.id === request.propertyId);
+        property?.evidence.push({ requirementKey: playbook.compliance.filesCertificate, completedAt: new Date() });
+      }
+    }
+
+    if (payment) {
+      payment.status = "captured";
+      payment.workOrderId = wo.id;
+      payment.status = "transferred"; // simulated PSP: same-day payout
+    }
+
+    const paidResult = transition(invoiceResult.state, "record_payment", "system");
+    const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+    if (paidResult.ok) request.events.push({ eventType: "record_payment", actorType: "system", actorId: "penny:psp", at: now });
+    if (closedResult?.ok) request.events.push({ eventType: "close", actorType: "system", actorId: "penny:psp", at: now });
+    wo.status = closedResult?.ok ? closedResult.state : invoiceResult.state;
+  }
+  return { ok: true };
+}
 
 // ——— v8 R1 helpers ———
 

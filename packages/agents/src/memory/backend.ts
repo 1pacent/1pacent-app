@@ -120,6 +120,35 @@ export class HonchoBackend implements MemoryBackend {
   }
 }
 
+/**
+ * Tone injection (Developer Brief v8 §5): ask Honcho how to SPEAK with this
+ * person — preferences, anxieties, communication style — never what's true
+ * about their money, dates, assets or compliance. Output is clipped and any
+ * recall failure degrades to null (Sally is politely generic, never wrong).
+ */
+export async function recallTone(
+  backend: MemoryBackend,
+  input: { orgId: string; contactId: string },
+): Promise<string | null> {
+  try {
+    const tone = await backend.recall({
+      orgId: input.orgId,
+      contactId: input.contactId,
+      query:
+        "In two short sentences: how should an assistant speak with this person? " +
+        "Tone, communication preferences, anxieties only — no facts, no amounts, no dates.",
+    });
+    if (!tone) return null;
+    const clipped = tone.length > 400 ? `${tone.slice(0, 400)}…` : tone;
+    // The boundary guard applies on the way out too: a tone hint that smells
+    // like a ledger fact is dropped wholesale.
+    return isGuardedFact({ content: clipped }) ? null : clipped;
+  } catch (e) {
+    console.warn("[memory] tone recall failed (degrading to generic):", e);
+    return null;
+  }
+}
+
 export interface ResolveMemoryEnv {
   HONCHO_BASE_URL?: string;
   HONCHO_API_KEY?: string;

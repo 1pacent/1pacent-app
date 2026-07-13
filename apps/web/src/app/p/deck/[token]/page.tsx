@@ -2,6 +2,8 @@ import Link from "next/link";
 import { getData } from "@/lib/data";
 import { Panel, PulseTopBar } from "@/components/pulse/shell";
 import { LiveRefresh } from "@/components/pulse/live-refresh";
+import { EnablePush } from "@/components/pulse/enable-push";
+import { BatchCard } from "./batch-card";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +53,18 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
           </p>
         </div>
 
+        {/* George's batch offers — same suburb, one run, certificates file themselves. */}
+        {ctx.batchableCompliance.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-hivis-400">Batch & save</p>
+            <div className="flex flex-col gap-2">
+              {ctx.batchableCompliance.map((g) => (
+                <BatchCard key={`${g.requirementKey}-${g.suburb}`} token={token} group={g} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {needsYou.length > 0 && (
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-hivis-400">Needs you</p>
@@ -97,6 +111,8 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
             </div>
           )}
         </div>
+
+        <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />
 
         {doneRecently.length > 0 && (
           <div>

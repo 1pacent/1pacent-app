@@ -1,6 +1,8 @@
 import { getData } from "@/lib/data";
 import { PulseTopBar } from "@/components/pulse/shell";
+import { EnablePush } from "@/components/pulse/enable-push";
 import { TradeHome } from "./trade-home";
+import { RunView } from "./run-view";
 
 export const dynamic = "force-dynamic";
 
@@ -20,11 +22,12 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
     );
   }
 
-  const [presence, offers, jobs, accuracy] = await Promise.all([
+  const [presence, offers, jobs, accuracy, run] = await Promise.all([
     data.getTradiePresence(token),
     data.getOpenOffers(token),
     data.listTradieJobs(token),
     data.getTradieAccuracy(token),
+    data.getTradieRun(token),
   ]);
 
   return (
@@ -42,6 +45,10 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
             : null,
         }}
       />
+      <div className="mt-4 flex flex-col gap-4">
+        {run && <RunView run={run} />}
+        <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />
+      </div>
     </>
   );
 }

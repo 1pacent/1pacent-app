@@ -4,6 +4,8 @@ import {
   createOpenRouterEmbedder,
   extractSallyProposal,
   formatMemoryContext,
+  recallTone,
+  resolveMemoryBackend,
   runSallyTurn,
   summarizeConversationForMemory,
   type ChatMessage,
@@ -66,6 +68,17 @@ export async function sendSallyMessage(token: string, userMessage: string): Prom
     console.warn("[sally] memory retrieval failed, continuing without it:", e);
   }
 
+  // Honcho tone injection (v8 §5): bedside manner only, never facts. Absent
+  // a HONCHO_BASE_URL grant this is a no-op — Sally is politely generic.
+  let toneContext: string | undefined;
+  const honcho = resolveMemoryBackend({
+    HONCHO_BASE_URL: process.env.HONCHO_BASE_URL,
+    HONCHO_API_KEY: process.env.HONCHO_API_KEY,
+  });
+  if (honcho) {
+    toneContext = (await recallTone(honcho, { orgId: "demo", contactId: context.contactId })) ?? undefined;
+  }
+
   const historyBeforeReply = await data.getSallyMessages(context.conversationId);
   const transcriptSoFar = historyBeforeReply.map((m) => ({ role: m.role, content: m.content }));
 
@@ -99,6 +112,7 @@ export async function sendSallyMessage(token: string, userMessage: string): Prom
           tenantFirstName: context.tenantFirstName,
         },
         memoryContext,
+        toneContext,
         priceBandHint,
         etaHint,
       },

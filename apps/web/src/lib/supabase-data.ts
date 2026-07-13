@@ -5,6 +5,7 @@ import {
   assessAssetHorizon,
   bookableAmountFromBand,
   buildObligationsCalendar,
+  buildRun,
   checkPlaybookGate,
   computeBatchableCompliance,
   decideApproval,
@@ -40,6 +41,7 @@ import {
   type RequestCategory,
   type RequestEvent,
   type RequestState,
+  type RunJob,
   type TokenScope,
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
@@ -68,6 +70,7 @@ import type {
   JobOfferView,
   JobProjection,
   JobViewer,
+  MomentActionKind,
   AutoQuoteSettingsView,
   CanvasCard,
   ComplianceStatusView,
@@ -2785,116 +2788,8 @@ export const supabaseData: DataSource = {
       if (prop?.owner_contact_id !== row.aggregate_id) return { ok: false, error: "Request not found." };
     }
 
-    // The human verification — the audit point.
     const actorType = row.scope === "tenant_intake" ? "tenant" : "agency_user";
-    const verifyResult = transition(req.status as RequestState, "verify", actorType as ActorType);
-    if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${req.status}".` };
-    const base = { org_id: req.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
-    await db.from("events").insert({
-      ...base,
-      event_type: "verify",
-      actor_type: actorType,
-      actor_id: `token:${row.id}`,
-    });
-    await db.from("maintenance_requests").update({ status: verifyResult.state }).eq("id", req.id);
-
-    const { data: wo } = await db
-      .from("work_orders")
-      .select("id, quote_cents, call_out_fee_cents")
-      .eq("request_id", req.id)
-      .maybeSingle();
-    if (!wo) return { ok: true };
-    await db.from("work_orders").update({ status: verifyResult.state }).eq("id", wo.id);
-
-    // Settlement: capture + transfer (simulated PSP), the record write, the
-    // certificate if this was a compliance playbook — Penny's whole job.
-    const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
-    const { data: payment } = await db
-      .from("payments")
-      .select("id, amount_cents, status")
-      .eq("request_id", req.id)
-      .maybeSingle();
-    const settleAmount = payment
-      ? Number(payment.amount_cents)
-      : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
-
-    const invoiceResult = transition(verifyResult.state, "invoice", "system");
-    if (!invoiceResult.ok) return { ok: true };
-    await db.from("events").insert({
-      ...base,
-      event_type: "invoice",
-      actor_type: "system",
-      actor_id: "penny:capture",
-      payload: { note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}` },
-    });
-
-    let assetId: string | null = null;
-    if (playbook) {
-      const { data: existingAsset } = await db
-        .from("property_assets")
-        .select("id")
-        .eq("property_id", req.property_id)
-        .eq("category", playbook.category)
-        .eq("label", playbook.assetLabel)
-        .maybeSingle();
-      if (existingAsset) assetId = existingAsset.id;
-      else {
-        const { data: created } = await db
-          .from("property_assets")
-          .insert({ org_id: req.org_id, property_id: req.property_id, category: playbook.category, label: playbook.assetLabel })
-          .select("id")
-          .single();
-        assetId = created?.id ?? null;
-      }
-      if (playbook.compliance) {
-        await db.from("compliance_certificates").insert({
-          org_id: req.org_id,
-          property_id: req.property_id,
-          requirement_key: playbook.compliance.filesCertificate,
-          completed_at: new Date().toISOString().slice(0, 10),
-          uploaded_by: "system:playbook-completion",
-        });
-      }
-    }
-    await db
-      .from("work_orders")
-      .update({
-        invoice_cents: settleAmount,
-        invoiced_at: new Date().toISOString(),
-        asset_id: assetId,
-        warranty_expires_at:
-          playbook && playbook.warrantyDefaultMonths > 0
-            ? new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString()
-            : null,
-      })
-      .eq("id", wo.id);
-
-    if (payment) {
-      await db
-        .from("payments")
-        .update({ status: "transferred", work_order_id: wo.id, updated_at: new Date().toISOString() })
-        .eq("id", payment.id);
-      await db.from("events").insert({
-        org_id: req.org_id,
-        aggregate_type: "work_order",
-        aggregate_id: wo.id,
-        event_type: "payment_transferred",
-        actor_type: "system",
-        actor_id: "penny:psp",
-        payload: { amountCents: settleAmount, psp: "simulated" },
-      });
-    }
-
-    const paidResult = transition(invoiceResult.state, "record_payment", "system");
-    const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
-    const trailing: Array<Record<string, unknown>> = [];
-    if (paidResult.ok) trailing.push({ ...base, event_type: "record_payment", actor_type: "system", actor_id: "penny:psp" });
-    if (closedResult?.ok) trailing.push({ ...base, event_type: "close", actor_type: "system", actor_id: "penny:psp" });
-    if (trailing.length > 0) await db.from("events").insert(trailing);
-    const finalState = closedResult?.ok ? closedResult.state : invoiceResult.state;
-    await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
-    await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
-    return { ok: true };
+    return verifySettleCore(db, req, { actorType: actorType as ActorType, actorId: `token:${row.id}` });
   },
 
   async getJobProjection(token, requestId): Promise<JobProjection | null> {
@@ -3153,7 +3048,478 @@ export const supabaseData: DataSource = {
     }
     return tiles;
   },
+
+  // ——— v8 R2: Autopilot & the Deck ———
+
+  async savePushSubscription(token, input) {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal", "pm_portfolio", "tradie_portal"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const contactId = row.contact_id ?? (row.scope === "owner_portal" || row.scope === "pm_portfolio" || row.scope === "tradie_portal" ? row.aggregate_id : null);
+    if (!contactId) return { ok: false, error: "This link has no person attached." };
+    const db = serviceClient();
+    const { error } = await db.from("push_subscriptions").upsert(
+      {
+        org_id: row.org_id,
+        contact_id: contactId,
+        endpoint: input.endpoint,
+        keys: input.keys,
+        home_path: input.homePath,
+      },
+      { onConflict: "endpoint" },
+    );
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  },
+
+  async getPushTargets(requestId, role) {
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return [];
+    const contactIds: string[] = [];
+    if (role === "payer") {
+      const { data: prop } = await db.from("properties").select("owner_contact_id").eq("id", req.property_id).maybeSingle();
+      if (prop?.owner_contact_id) contactIds.push(prop.owner_contact_id);
+    } else if (role === "occupant") {
+      const { data: tenancy } = await db
+        .from("tenancies")
+        .select("tenant_contact_id")
+        .eq("property_id", req.property_id)
+        .is("end_date", null)
+        .maybeSingle();
+      if (tenancy?.tenant_contact_id) contactIds.push(tenancy.tenant_contact_id);
+    } else if (role === "assigned_tradie") {
+      const { data: wo } = await db.from("work_orders").select("tradie_contact_id").eq("request_id", req.id).maybeSingle();
+      if (wo?.tradie_contact_id) contactIds.push(wo.tradie_contact_id);
+    } else if (role === "tradie_offered") {
+      const { data: qs } = await db.from("quotes").select("tradie_contact_id").eq("request_id", req.id).eq("status", "invited");
+      for (const q of (qs ?? []) as Array<{ tradie_contact_id: string }>) contactIds.push(q.tradie_contact_id);
+    } else if (role === "pm") {
+      const { data: prop } = await db.from("properties").select("pm_contact_id").eq("id", req.property_id).maybeSingle();
+      const pmId = (prop as { pm_contact_id?: string | null } | null)?.pm_contact_id;
+      if (pmId) contactIds.push(pmId);
+    }
+    if (contactIds.length === 0) return [];
+    const { data: subs } = await db
+      .from("push_subscriptions")
+      .select("contact_id, endpoint, keys, home_path, contacts(full_name)")
+      .in("contact_id", contactIds);
+    return ((subs ?? []) as Array<{
+      contact_id: string;
+      endpoint: string;
+      keys: { p256dh: string; auth: string };
+      home_path: string | null;
+      contacts: { full_name: string } | { full_name: string }[] | null;
+    }>).map((s) => ({
+      contactId: s.contact_id,
+      name: (Array.isArray(s.contacts) ? s.contacts[0]?.full_name : s.contacts?.full_name) ?? "",
+      endpoint: s.endpoint,
+      keys: s.keys,
+      homePath: s.home_path,
+    }));
+  },
+
+  async mintMomentAction(requestId, input) {
+    const db = serviceClient();
+    const { data: req } = await db.from("maintenance_requests").select("id, org_id").eq("id", requestId).maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    const issued = issueToken("moment_action");
+    const { error } = await db.from("access_tokens").insert({
+      org_id: req.org_id,
+      token_hash: issued.tokenHash,
+      scope: "moment_action",
+      aggregate_id: requestId,
+      contact_id: input.contactId,
+      expires_at: issued.expiresAt.toISOString(),
+      payload: { kind: input.kind, ...(input.meta ?? {}) },
+    });
+    if (error) return { ok: false, error: error.message };
+    return { ok: true, path: `/api/act/${issued.token}` };
+  },
+
+  async executeMomentAction(rawToken, choice) {
+    const db = serviceClient();
+    const { data: row } = await db
+      .from("access_tokens")
+      .select("id, org_id, aggregate_id, contact_id, scope, expires_at, used_at, payload")
+      .eq("token_hash", hashToken(rawToken))
+      .eq("scope", "moment_action")
+      .maybeSingle();
+    if (!row || row.used_at || new Date(row.expires_at).getTime() < Date.now()) {
+      return { ok: false, error: "This decision link has expired or was already used." };
+    }
+    const payload = (row.payload ?? {}) as { kind?: MomentActionKind; actorType?: string };
+    const requestId = row.aggregate_id as string;
+    // Burn first — a raced second tap must lose.
+    const { data: burned } = await db
+      .from("access_tokens")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", row.id)
+      .is("used_at", null)
+      .select("id");
+    if (!burned || burned.length === 0) return { ok: false, error: "This decision was already taken." };
+
+    if (payload.kind === "approve_request") {
+      if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
+      const { data: req } = await db.from("maintenance_requests").select("id, org_id, status").eq("id", requestId).maybeSingle();
+      if (!req) return { ok: false, error: "Request not found." };
+      const result = transition(req.status as RequestState, choice, "landlord");
+      if (!result.ok) return { ok: false, error: `This request is ${String(req.status).replace(/_/g, " ")} — no decision is pending.` };
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "maintenance_request",
+        aggregate_id: req.id,
+        event_type: choice,
+        actor_type: "landlord",
+        actor_id: `moment:${row.id}`,
+      });
+      await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
+      return { ok: true, label: choice === "approve" ? "Approved" : "Declined", requestId };
+    }
+
+    if (payload.kind === "verify_job") {
+      const { data: req } = await db
+        .from("maintenance_requests")
+        .select("id, org_id, property_id, status, playbook_key")
+        .eq("id", requestId)
+        .maybeSingle();
+      if (!req) return { ok: false, error: "Request not found." };
+      const actorType = (payload.actorType === "tenant" ? "tenant" : "agency_user") as ActorType;
+      const result = await verifySettleCore(db, req, { actorType, actorId: `moment:${row.id}` });
+      return result.ok ? { ok: true, label: "Verified — payment released", requestId } : { ok: false, error: result.error };
+    }
+
+    if (payload.kind === "decide_variance") {
+      // Wired in R3 alongside the variance protocol.
+      return { ok: false, error: "Variance decisions land with the next release." };
+    }
+
+    return { ok: false, error: "Unknown decision kind." };
+  },
+
+  async getAutopilot(ownerToken) {
+    const resolved = await resolveToken(ownerToken, "owner_portal");
+    if (!resolved) return null;
+    const db = serviceClient();
+    const { data: props } = await db.from("properties").select("id").eq("owner_contact_id", resolved.aggregate_id);
+    const propertyIds = ((props ?? []) as Array<{ id: string }>).map((p) => p.id);
+    if (propertyIds.length === 0) {
+      return { enabled: false, maxTotalCents: 50_000, minTrustScore: 60, safetyCategories: AUTOPILOT_SAFETY_CATEGORIES, propertiesCovered: 0 };
+    }
+    const { data: rules } = await db
+      .from("approval_policy_rules")
+      .select("property_id, max_total_cents, min_trust_score, exclude_categories, enabled")
+      .in("property_id", propertyIds)
+      .eq("priority", AUTOPILOT_RULE_PRIORITY);
+    const ruleRows = (rules ?? []) as Array<{ max_total_cents: number | null; min_trust_score: number | null; exclude_categories: string[]; enabled: boolean }>;
+    const active = ruleRows.find((r) => r.enabled) ?? ruleRows[0];
+    return {
+      enabled: Boolean(active?.enabled),
+      maxTotalCents: active?.max_total_cents != null ? Number(active.max_total_cents) : 50_000,
+      minTrustScore: active?.min_trust_score != null ? Number(active.min_trust_score) : 60,
+      safetyCategories:
+        active && active.exclude_categories.length === 0 ? [] : AUTOPILOT_SAFETY_CATEGORIES,
+      propertiesCovered: propertyIds.length,
+    };
+  },
+
+  async setAutopilot(ownerToken, input) {
+    const resolved = await resolveToken(ownerToken, "owner_portal");
+    if (!resolved) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: props } = await db
+      .from("properties")
+      .select("id, org_id")
+      .eq("owner_contact_id", resolved.aggregate_id);
+    const propRows = (props ?? []) as Array<{ id: string; org_id: string }>;
+    if (propRows.length === 0) return { ok: false, error: "No properties on this seat." };
+    for (const prop of propRows) {
+      await db
+        .from("approval_policy_rules")
+        .delete()
+        .eq("property_id", prop.id)
+        .eq("priority", AUTOPILOT_RULE_PRIORITY);
+      const { error } = await db.from("approval_policy_rules").insert({
+        org_id: prop.org_id,
+        property_id: prop.id,
+        priority: AUTOPILOT_RULE_PRIORITY,
+        max_total_cents: input.maxTotalCents,
+        min_trust_score: input.minTrustScore,
+        exclude_categories: input.safetyOn ? AUTOPILOT_SAFETY_CATEGORIES : [],
+        enabled: input.enabled,
+      });
+      if (error) return { ok: false, error: error.message };
+    }
+    // The setting itself is a human act on the record.
+    await db.from("events").insert({
+      org_id: propRows[0]!.org_id,
+      aggregate_type: "property",
+      aggregate_id: propRows[0]!.id,
+      event_type: "policy_updated",
+      actor_type: "landlord",
+      actor_id: `token:${resolved.id}`,
+      payload: {
+        autopilot: input.enabled,
+        maxTotalCents: input.maxTotalCents,
+        minTrustScore: input.minTrustScore,
+        safetyOn: input.safetyOn,
+        properties: propRows.length,
+      },
+    });
+    return { ok: true };
+  },
+
+  async getTradieRun(tradiePortalToken) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const { data: wos } = await db
+      .from("work_orders")
+      .select(
+        "id, request_id, status, scheduled_start_at, scheduled_end_at, maintenance_requests!work_orders_request_id_fkey!inner(id, title, status, playbook_key, booked_start_at, booked_end_at, properties(address_line1, suburb))",
+      )
+      .eq("tradie_contact_id", resolved.contact_id)
+      .in("status", ["scheduled", "in_progress"]);
+    const jobs: RunJob[] = [];
+    const meta = new Map<string, { address: string; state: RequestState; slotLabel: string | null }>();
+    for (const wo of (wos ?? []) as unknown as Array<{
+      id: string;
+      request_id: string;
+      status: string;
+      scheduled_start_at: string | null;
+      scheduled_end_at: string | null;
+      maintenance_requests: {
+        id: string;
+        title: string;
+        status: string;
+        playbook_key: string | null;
+        booked_start_at: string | null;
+        booked_end_at: string | null;
+        properties: { address_line1: string; suburb: string } | { address_line1: string; suburb: string }[] | null;
+      };
+    }>) {
+      const req = wo.maintenance_requests;
+      const prop = Array.isArray(req.properties) ? req.properties[0] : req.properties;
+      const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+      const startIso = wo.scheduled_start_at ?? req.booked_start_at;
+      const endIso = wo.scheduled_end_at ?? req.booked_end_at;
+      jobs.push({
+        workOrderId: wo.id,
+        requestId: req.id,
+        title: req.title,
+        address: prop?.address_line1 ?? "",
+        suburb: prop?.suburb ?? "",
+        slotStartAt: startIso ? new Date(startIso) : null,
+        slotEndAt: endIso ? new Date(endIso) : null,
+        typicalMinutes: playbook?.typicalMinutes ?? 90,
+        urgent: false,
+      });
+      meta.set(wo.id, {
+        address: prop ? `${prop.address_line1}, ${prop.suburb}` : "",
+        state: req.status as RequestState,
+        slotLabel: startIso ? formatSlot({ startAt: new Date(startIso), endAt: new Date(endIso ?? startIso) }) : null,
+      });
+    }
+    const run = buildRun(jobs, { dayStart: new Date() });
+    const busy = await calendarBusyWindows(db, resolved.contact_id);
+    return {
+      legs: run.legs.map((l) => ({
+        workOrderId: l.job.workOrderId,
+        requestId: l.job.requestId,
+        title: l.job.title,
+        address: meta.get(l.job.workOrderId)?.address ?? l.job.address,
+        suburb: l.job.suburb,
+        travelMinutes: l.travelMinutes,
+        arriveAt: l.arriveAt.toISOString(),
+        departAt: l.departAt.toISOString(),
+        conflict: l.conflict,
+        slotLabel: meta.get(l.job.workOrderId)?.slotLabel ?? null,
+        state: meta.get(l.job.workOrderId)?.state ?? "scheduled",
+      })),
+      totalTravelMinutes: run.totalTravelMinutes,
+      totalOnSiteMinutes: run.totalOnSiteMinutes,
+      calendarBusy: busy,
+    };
+  },
 };
+
+/** The Autopilot sliders write exactly one rule per property at this priority —
+ * distinct from any hand-crafted dashboard rules (which sort after it). */
+const AUTOPILOT_RULE_PRIORITY = -100;
+
+/** Safety switch: work in these categories always comes to a human, whatever
+ * the sliders say. Gas, electrical danger, and life-safety devices. */
+const AUTOPILOT_SAFETY_CATEGORIES: RequestCategory[] = [
+  "gas_leak",
+  "dangerous_electrical_fault",
+  "safety_device_fault_smoke_alarm_or_pool_barrier",
+];
+
+/** George layer 3 (opt-in): read the tradie's external calendar busy windows
+ * for today. No grant (or any API failure) → empty — the ledger plans alone. */
+async function calendarBusyWindows(
+  db: ReturnType<typeof serviceClient>,
+  tradieContactId: string,
+): Promise<Array<{ startAt: string; endAt: string }>> {
+  const { data: cal } = await db
+    .from("tradie_calendar")
+    .select("access_token, read_busy, provider")
+    .eq("tradie_contact_id", tradieContactId)
+    .maybeSingle();
+  if (!cal?.access_token || !cal.read_busy || cal.provider !== "google") return [];
+  try {
+    const dayStart = new Date();
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+    const res = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cal.access_token}` },
+      body: JSON.stringify({
+        timeMin: dayStart.toISOString(),
+        timeMax: dayEnd.toISOString(),
+        items: [{ id: "primary" }],
+      }),
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as {
+      calendars?: { primary?: { busy?: Array<{ start: string; end: string }> } };
+    };
+    return (body.calendars?.primary?.busy ?? []).map((b) => ({ startAt: b.start, endAt: b.end }));
+  } catch {
+    return [];
+  }
+}
+
+interface VerifiableRequestRow {
+  id: string;
+  org_id: string;
+  property_id: string;
+  status: string;
+  playbook_key: string | null;
+}
+
+/**
+ * The human verification + Penny's settlement, shared by the Job Screen's
+ * verify tap and the lock-screen one-tap moment action. Callers have already
+ * proven the actor may see this request; this records the human actor and
+ * runs capture → transfer (simulated PSP) → the Address Record write.
+ */
+async function verifySettleCore(
+  db: ReturnType<typeof serviceClient>,
+  req: VerifiableRequestRow,
+  actor: { actorType: ActorType; actorId: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const verifyResult = transition(req.status as RequestState, "verify", actor.actorType);
+  if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${req.status}".` };
+  const base = { org_id: req.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
+  await db.from("events").insert({
+    ...base,
+    event_type: "verify",
+    actor_type: actor.actorType,
+    actor_id: actor.actorId,
+  });
+  await db.from("maintenance_requests").update({ status: verifyResult.state }).eq("id", req.id);
+
+  const { data: wo } = await db
+    .from("work_orders")
+    .select("id, quote_cents, call_out_fee_cents")
+    .eq("request_id", req.id)
+    .maybeSingle();
+  if (!wo) return { ok: true };
+  await db.from("work_orders").update({ status: verifyResult.state }).eq("id", wo.id);
+
+  // Settlement: capture + transfer (simulated PSP), the record write, the
+  // certificate if this was a compliance playbook — Penny's whole job.
+  const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
+  const { data: payment } = await db
+    .from("payments")
+    .select("id, amount_cents, status")
+    .eq("request_id", req.id)
+    .maybeSingle();
+  const settleAmount = payment
+    ? Number(payment.amount_cents)
+    : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+
+  const invoiceResult = transition(verifyResult.state, "invoice", "system");
+  if (!invoiceResult.ok) return { ok: true };
+  await db.from("events").insert({
+    ...base,
+    event_type: "invoice",
+    actor_type: "system",
+    actor_id: "penny:capture",
+    payload: { note: `Fixed price captured on verification — ${(settleAmount / 100).toFixed(2)}` },
+  });
+
+  let assetId: string | null = null;
+  if (playbook) {
+    const { data: existingAsset } = await db
+      .from("property_assets")
+      .select("id")
+      .eq("property_id", req.property_id)
+      .eq("category", playbook.category)
+      .eq("label", playbook.assetLabel)
+      .maybeSingle();
+    if (existingAsset) assetId = existingAsset.id;
+    else {
+      const { data: created } = await db
+        .from("property_assets")
+        .insert({ org_id: req.org_id, property_id: req.property_id, category: playbook.category, label: playbook.assetLabel })
+        .select("id")
+        .single();
+      assetId = created?.id ?? null;
+    }
+    if (playbook.compliance) {
+      await db.from("compliance_certificates").insert({
+        org_id: req.org_id,
+        property_id: req.property_id,
+        requirement_key: playbook.compliance.filesCertificate,
+        completed_at: new Date().toISOString().slice(0, 10),
+        uploaded_by: "system:playbook-completion",
+      });
+    }
+  }
+  await db
+    .from("work_orders")
+    .update({
+      invoice_cents: settleAmount,
+      invoiced_at: new Date().toISOString(),
+      asset_id: assetId,
+      warranty_expires_at:
+        playbook && playbook.warrantyDefaultMonths > 0
+          ? new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString()
+          : null,
+    })
+    .eq("id", wo.id);
+
+  if (payment) {
+    await db
+      .from("payments")
+      .update({ status: "transferred", work_order_id: wo.id, updated_at: new Date().toISOString() })
+      .eq("id", payment.id);
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: "payment_transferred",
+      actor_type: "system",
+      actor_id: "penny:psp",
+      payload: { amountCents: settleAmount, psp: "simulated" },
+    });
+  }
+
+  const paidResult = transition(invoiceResult.state, "record_payment", "system");
+  const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
+  const trailing: Array<Record<string, unknown>> = [];
+  if (paidResult.ok) trailing.push({ ...base, event_type: "record_payment", actor_type: "system", actor_id: "penny:psp" });
+  if (closedResult?.ok) trailing.push({ ...base, event_type: "close", actor_type: "system", actor_id: "penny:psp" });
+  if (trailing.length > 0) await db.from("events").insert(trailing);
+  const finalState = closedResult?.ok ? closedResult.state : invoiceResult.state;
+  await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
+  await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
+  return { ok: true };
+}
 
 interface ContactJoin {
   full_name: string;
@@ -3459,6 +3825,7 @@ async function rateCardSuggestion(
 
 interface TokenRow {
   id: string;
+  org_id: string;
   token_hash: string;
   scope: TokenScope;
   aggregate_id: string | null;
@@ -3471,7 +3838,7 @@ async function resolveToken(rawToken: string, expectedScope: TokenScope): Promis
   const db = serviceClient();
   const { data } = await db
     .from("access_tokens")
-    .select("id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
+    .select("id, org_id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
     .eq("token_hash", hashToken(rawToken))
     .maybeSingle();
   if (!data) return null;
@@ -3496,7 +3863,7 @@ async function resolveTokenAny(rawToken: string, allowed: TokenScope[]): Promise
   const db = serviceClient();
   const { data } = await db
     .from("access_tokens")
-    .select("id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
+    .select("id, org_id, token_hash, scope, aggregate_id, contact_id, expires_at, used_at")
     .eq("token_hash", hashToken(rawToken))
     .maybeSingle();
   if (!data) return null;
@@ -3632,7 +3999,7 @@ async function categoryMedians(
   return medians;
 }
 
-async function spendingForProperties(
+export async function spendingForProperties(
   db: ReturnType<typeof serviceClient>,
   propertyIds: string[],
   periodMonths: number,
@@ -3677,7 +4044,7 @@ async function spendingForProperties(
   };
 }
 
-async function obligationsForProperties(
+export async function obligationsForProperties(
   propertyIds: string[],
   horizonDays: number,
 ): Promise<ObligationsCalendarView> {

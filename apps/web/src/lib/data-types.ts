@@ -551,6 +551,68 @@ export interface DeckTile {
   at: string;
 }
 
+/** ——— v8 R2: Autopilot & the Deck ——— */
+
+export interface PushSubscriptionInput {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  /** The subscriber's app path (their token page) — push deep-links are built
+   * relative to it. Same capability class as the link they were sent. */
+  homePath: string;
+}
+
+export interface PushTarget {
+  contactId: string;
+  name: string;
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+  homePath: string | null;
+}
+
+/** Who a moment about this request should reach. */
+export type MomentRole = "payer" | "occupant" | "assigned_tradie" | "tradie_offered" | "pm";
+
+/** The decisions a one-tap signed action can carry. The token names exactly
+ * one decision for one human; it burns on use. */
+export type MomentActionKind = "approve_request" | "verify_job" | "decide_variance";
+
+export interface AutopilotView {
+  enabled: boolean;
+  maxTotalCents: number;
+  minTrustScore: number;
+  /** Safety switch — these categories always come to a human. */
+  safetyCategories: RequestCategory[];
+  propertiesCovered: number;
+}
+
+export interface AutopilotInput {
+  enabled: boolean;
+  maxTotalCents: number;
+  minTrustScore: number;
+  safetyOn: boolean;
+}
+
+export interface TradieRunView {
+  legs: Array<{
+    workOrderId: string;
+    requestId: string;
+    title: string;
+    address: string;
+    suburb: string;
+    travelMinutes: number;
+    arriveAt: string;
+    departAt: string;
+    conflict: boolean;
+    slotLabel: string | null;
+    state: RequestState;
+  }>;
+  totalTravelMinutes: number;
+  totalOnSiteMinutes: number;
+  /** Read-busy overlay from the tradie's external calendar (opt-in; empty
+   * without a grant — the ledger plans the day either way). */
+  calendarBusy: Array<{ startAt: string; endAt: string }>;
+}
+
 export interface DataSource {
   listProperties(): Promise<PropertySummary[]>;
   getProperty(id: string): Promise<PropertyDetail | null>;
@@ -757,6 +819,36 @@ export interface DataSource {
 
   /** The PM Deck: every live job as a tile. */
   getDeckTiles(pmPortfolioToken: string): Promise<DeckTile[]>;
+
+  // ——— v8 R2: Autopilot & the Deck ———
+
+  /** Register this device for Moments. Any persona token may subscribe. */
+  savePushSubscription(token: string, input: PushSubscriptionInput): Promise<{ ok: boolean; error?: string }>;
+
+  /** Subscriptions of the humans a moment about this request should reach. */
+  getPushTargets(requestId: string, role: MomentRole): Promise<PushTarget[]>;
+
+  /** Mint a single-use signed action for one human's one decision (the
+   * lock-screen tap). Returns the /api/act path carrying the raw token. */
+  mintMomentAction(
+    requestId: string,
+    input: { kind: MomentActionKind; contactId: string | null; meta?: Record<string, unknown> },
+  ): Promise<{ ok: boolean; path?: string; error?: string }>;
+
+  /** Resolve + burn a moment-action token and execute its decision as the
+   * human it was minted for. The ledger records a human actor, as ever. */
+  executeMomentAction(
+    rawToken: string,
+    choice: string,
+  ): Promise<{ ok: boolean; label?: string; requestId?: string; error?: string }>;
+
+  /** Owner Autopilot — the v4 policy engine as three sliders. */
+  getAutopilot(ownerToken: string): Promise<AutopilotView | null>;
+  setAutopilot(ownerToken: string, input: AutopilotInput): Promise<{ ok: boolean; error?: string }>;
+
+  /** George's plan for the tradie's day: booked slots anchored, travel legs
+   * estimated, conflicts flagged (never silently re-booked). */
+  getTradieRun(tradiePortalToken: string): Promise<TradieRunView | null>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

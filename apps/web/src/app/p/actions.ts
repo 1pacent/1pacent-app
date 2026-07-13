@@ -4,8 +4,17 @@ import { triageIntake, OpenRouterClient, SALLY_PROMPT_VERSION } from "@1pacent/a
 import { getPlaybook, playbookForCategory, type RequestCategory } from "@1pacent/core";
 import { getData } from "@/lib/data";
 import { jobTopic, poke, tradeTopic } from "@/lib/poke";
+import { pushMoment } from "@/lib/push";
 import { triggerDispatchQuotes } from "@/lib/n8n";
-import type { BookingPreview, BookJobResult, JobProjection } from "@/lib/data-types";
+import type {
+  AutopilotInput,
+  AutopilotView,
+  BookingPreview,
+  BookJobResult,
+  JobProjection,
+  PushSubscriptionInput,
+  TradieRunView,
+} from "@/lib/data-types";
 
 /**
  * Pulse actions (v8 R1). Every mutation: token-scoped DataSource call →
@@ -81,6 +90,12 @@ export async function bookJobAction(
   if (result.ok) {
     await poke(tradeTopic());
     await poke(jobTopic(result.requestId));
+    // The job ping — matched Online tradies get it on the lock screen.
+    await pushMoment(result.requestId, "tradie_offered", {
+      title: "Job ping 🔧",
+      body: `${input.title} — first accept wins.`,
+      tag: `offer-${result.requestId}`,
+    });
     // n8n job ping (transport only; graceful no-op while n8n is down).
     try {
       await triggerDispatchQuotes({
@@ -106,6 +121,12 @@ export async function acceptOfferAction(token: string, quoteId: string) {
   if (result.ok && result.requestId) {
     await poke(jobTopic(result.requestId));
     await poke(tradeTopic());
+    await pushMoment(result.requestId, "occupant", {
+      title: "You're booked ✓",
+      body: "A verified tradie accepted your job. Watch it live.",
+      path: `job/${result.requestId}`,
+      tag: `booked-${result.requestId}`,
+    });
   }
   return result;
 }
@@ -118,7 +139,17 @@ export async function setOnlineAction(token: string, online: boolean) {
 
 export async function onMyWayAction(token: string, workOrderId: string, requestId: string) {
   const result = await (await getData()).markOnMyWay(token, workOrderId);
-  if (result.ok) await poke(jobTopic(requestId));
+  if (result.ok) {
+    await poke(jobTopic(requestId));
+    // George's on-the-way ping (Maps-computed ETA arrives with geocoding;
+    // the arc on the Job Screen is the live source either way).
+    await pushMoment(requestId, "occupant", {
+      title: "On the way 🚐",
+      body: "Your tradie is heading to you now. Track the job live.",
+      path: `job/${requestId}`,
+      tag: `otw-${requestId}`,
+    });
+  }
   return result;
 }
 
@@ -141,7 +172,24 @@ export async function addEvidenceAction(
 
 export async function completeJobAction(token: string, workOrderId: string, requestId: string, note: string) {
   const result = await (await getData()).completeJob(token, workOrderId, note);
-  if (result.ok) await poke(jobTopic(requestId));
+  if (result.ok) {
+    await poke(jobTopic(requestId));
+    // The verify moment — one tap from the lock screen releases payment.
+    await pushMoment(requestId, "occupant", {
+      title: "Job done — all good?",
+      body: "Tap Verify to confirm the work. Payment releases only when you say so.",
+      path: `job/${requestId}`,
+      oneTap: { kind: "verify_job", choices: [{ choice: "verify", label: "Verify ✓" }], actorType: "tenant" },
+      tag: `verify-${requestId}`,
+    });
+    await pushMoment(requestId, "payer", {
+      title: "Job done — evidence in",
+      body: "Photos are on the record. Verify to capture and pay same-day.",
+      path: `job/${requestId}`,
+      oneTap: { kind: "verify_job", choices: [{ choice: "verify", label: "Verify ✓" }], actorType: "agency_user" },
+      tag: `verify-${requestId}`,
+    });
+  }
   return result;
 }
 
@@ -156,4 +204,28 @@ export async function verifySettleAction(token: string, requestId: string) {
 
 export async function sallyVersion(): Promise<string> {
   return SALLY_PROMPT_VERSION;
+}
+
+// ——— v8 R2: Autopilot & the Deck ———
+
+export async function savePushSubscriptionAction(token: string, input: PushSubscriptionInput) {
+  return (await getData()).savePushSubscription(token, input);
+}
+
+export async function getAutopilotAction(token: string): Promise<AutopilotView | null> {
+  return (await getData()).getAutopilot(token);
+}
+
+export async function setAutopilotAction(token: string, input: AutopilotInput) {
+  return (await getData()).setAutopilot(token, input);
+}
+
+export async function getTradieRunAction(token: string): Promise<TradieRunView | null> {
+  return (await getData()).getTradieRun(token);
+}
+
+export async function dispatchBatchAction(token: string, input: { requirementKey: string; suburb: string }) {
+  const result = await (await getData()).dispatchComplianceBatch(token, input);
+  if (result.ok) await poke(tradeTopic());
+  return result;
 }

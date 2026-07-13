@@ -15,6 +15,7 @@ export const TOKEN_SCOPES = [
   "pm_portfolio",
   "tradie_lead_intake",
   "owner_portal",
+  "moment_action",
 ] as const;
 
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
@@ -29,6 +30,7 @@ export const TOKEN_TTL_HOURS: Record<TokenScope, number> = {
   pm_portfolio: 24 * 365, // a property manager's durable "informed, not gating" portfolio view
   tradie_lead_intake: 24 * 365, // a tradie's own shareable "talk to my business" link, for their own customers
   owner_portal: 24 * 365, // a landlord/owner's durable seat — same class as tradie_portal/pm_portfolio
+  moment_action: 72, // a one-tap lock-screen decision; burns on use like an approval link
 };
 
 export interface IssuedToken {
@@ -62,7 +64,7 @@ export interface StoredToken {
   /** Approval links are single-use; intake/status/job links are reusable. */
 }
 
-const SINGLE_USE_SCOPES: readonly TokenScope[] = ["landlord_approval"];
+const SINGLE_USE_SCOPES: readonly TokenScope[] = ["landlord_approval", "moment_action"];
 
 export type TokenValidation =
   | { ok: true }

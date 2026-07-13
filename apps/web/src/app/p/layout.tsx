@@ -1,8 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
   title: "1Pacent Pulse",
   description: "Press the button, and the job runs itself — while the address remembers everything.",
+  manifest: "/manifest.json",
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "1Pacent" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0B1A16",
 };
 
 /**

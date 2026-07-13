@@ -26,6 +26,9 @@ export interface SallyPromptContext {
   operating: SallyOperatingContext;
   /** Curated facts retrieved from pgvector memory, already formatted as prose. */
   memoryContext?: string;
+  /** Honcho's theory-of-mind about this person — tone, preferences,
+   * anxieties. Bedside manner ONLY: never a source of facts (v8 §5). */
+  toneContext?: string;
   /**
    * A REAL price band, already computed deterministically (percentile-over-
    * comparables or a documented fallback — see packages/core's
@@ -95,6 +98,9 @@ function buildSeatPrompt(
     "",
     "Keep replies short and human. One or two sentences of narration over a tool result beats a wall of numbers — the card carries the detail.",
     context.memoryContext ? `\nKnown context from past conversations:\n${context.memoryContext}` : "",
+    context.toneContext
+      ? `\nBedside manner (how to speak with this person — NEVER a source of facts):\n${context.toneContext}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n");
@@ -153,6 +159,9 @@ function buildIntakePrompt(
     handoffLine,
     "",
     context.memoryContext ? `Known context from past conversations:\n${context.memoryContext}` : "",
+    context.toneContext
+      ? `Bedside manner (how to speak with this person — NEVER a source of facts):\n${context.toneContext}`
+      : "",
   ]
     .filter(Boolean)
     .join("\n");
