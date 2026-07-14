@@ -43,7 +43,12 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
           offers,
           jobs: jobs.map((j) => ({ requestId: j.requestId, title: j.requestTitle, address: j.propertyAddress, state: j.state })),
           accuracy: accuracy
-            ? { trustScore: accuracy.trustScore, completedJobs: accuracy.completedJobs, variancePct: accuracy.avgAbsVariancePct }
+            ? {
+                trustScore: accuracy.trustScore,
+                completedJobs: accuracy.completedJobs,
+                variancePct: accuracy.avgAbsVariancePct,
+                timeVariancePct: accuracy.avgAbsTimeVariancePct,
+              }
             : null,
         }}
       />

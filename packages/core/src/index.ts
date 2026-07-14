@@ -12,6 +12,7 @@ export * from "./compliance/catalogue";
 export * from "./compliance/engine";
 export * from "./quotes/rules";
 export * from "./trust/scoring";
+export * from "./trust/actuals";
 export * from "./pricing/estimate";
 export * from "./quotes/ranking";
 export * from "./scheduling/score";

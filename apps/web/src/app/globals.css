@@ -31,18 +31,20 @@
   --color-gold-800: #634c25;
   --color-gold-900: #453518;
 
-  /* Hi-Vis (v8): the aesthetic of a well-run site. Deep field greens for
-   * the world; hi-vis gold reserved EXCLUSIVELY for the one action that
-   * matters on each screen. Dark-first — vans at 6am, hallways at 10pm. */
-  --color-field-950: #060f0c;
-  --color-field-900: #0b1a16;
-  --color-field-800: #10261f;
-  --color-field-700: #17352c;
-  --color-field-600: #1f4a38;
-  --color-field-line: #234438;
-  --color-hivis-400: #ffd60a;
-  --color-hivis-500: #f5c400;
-  --color-hivis-600: #d9ad00;
+  /* Pulse (v8): trust blues. The world is deep harbour navy — calm, bank-
+   * grade, dark-first (vans at 6am, hallways at 10pm) — and the single
+   * action that matters on each screen is bright signal blue, reserved
+   * EXCLUSIVELY for that action. Token names kept (field/hivis) so the
+   * scheme swaps without touching components. */
+  --color-field-950: #060d1a;
+  --color-field-900: #0a1628;
+  --color-field-800: #0f1f38;
+  --color-field-700: #16294a;
+  --color-field-600: #1e3861;
+  --color-field-line: #223a58;
+  --color-hivis-400: #38bdf8;
+  --color-hivis-500: #1ba8ec;
+  --color-hivis-600: #0d8ecf;
   --color-mint-300: #7fd6ac;
   --color-mint-400: #4fbe8b;
 
@@ -64,10 +66,10 @@ body {
 @keyframes hivis-breathe {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(255, 214, 10, 0.45);
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.45);
   }
   50% {
-    box-shadow: 0 0 0 14px rgba(255, 214, 10, 0);
+    box-shadow: 0 0 0 14px rgba(56, 189, 248, 0);
   }
 }
 .hivis-breathe {

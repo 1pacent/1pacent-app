@@ -40,7 +40,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ tok
   const message = result.ok ? `${result.label ?? "Done"} ✓` : (result.error ?? "That didn't work.");
   return new NextResponse(
     `<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
-<body style="margin:0;display:grid;place-items:center;min-height:100dvh;background:#0B1A16;color:#fff;font-family:system-ui">
+<body style="margin:0;display:grid;place-items:center;min-height:100dvh;background:#0A1628;color:#fff;font-family:system-ui">
 <div style="text-align:center;padding:24px">
   <p style="font-size:22px;font-weight:700">${escapeHtml(message)}</p>
   <p style="color:rgba(255,255,255,.5);font-size:14px">Recorded on the ledger${result.ok ? " with you as the actor" : ""}.</p>

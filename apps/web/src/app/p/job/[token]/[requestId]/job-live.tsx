@@ -7,6 +7,7 @@ import { useLive } from "@/components/pulse/use-live";
 import type { JobProjection } from "@/lib/data-types";
 import {
   addEvidenceAction,
+  addJobPartAction,
   completeJobAction,
   decideVarianceAction,
   getJobAction,
@@ -39,6 +40,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   const [varianceOpen, setVarianceOpen] = useState(false);
   const [varianceTotal, setVarianceTotal] = useState("");
   const [varianceReason, setVarianceReason] = useState("");
+  const [partOpen, setPartOpen] = useState(false);
+  const [partLabel, setPartLabel] = useState("");
+  const [partCost, setPartCost] = useState("");
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -114,7 +118,44 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
             </p>
           )}
         </div>
+        {job.money.basis && (
+          <p className="mt-2 border-t border-field-line pt-2 text-[10px] leading-relaxed text-white/40">
+            {job.money.basis}
+          </p>
+        )}
       </Panel>
+
+      {/* Parts booked to the job (v8 R3.5) */}
+      {job.parts.length > 0 && (
+        <Panel>
+          <p className="mb-2 text-[10px] uppercase tracking-widest text-white/40">Parts on this job</p>
+          <div className="flex flex-col gap-1.5">
+            {job.parts.map((pt) => (
+              <div key={pt.id} className="flex items-center justify-between text-sm">
+                <span className={pt.status === "declined" ? "text-white/30 line-through" : "text-white/80"}>
+                  🔩 {pt.label}
+                </span>
+                <span className="flex items-center gap-2 text-xs">
+                  {pt.status === "pending_approval" && (
+                    <span className="rounded-full bg-hivis-400/15 px-2 py-0.5 text-[9px] font-bold uppercase text-hivis-400">
+                      awaiting payer
+                    </span>
+                  )}
+                  {pt.costCents !== null && <span className="font-semibold text-white/60">{dollars(pt.costCents)}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {/* The learning loop, on the glass */}
+      {job.onSite.actualMinutes !== null && job.onSite.estimatedMinutes !== null && (
+        <p className="text-xs text-white/40">
+          ⏱ On site {job.onSite.actualMinutes} min · estimated {job.onSite.estimatedMinutes} min — every job sharpens
+          the network&apos;s estimates.
+        </p>
+      )}
 
       {/* Evidence strip */}
       {(job.evidence.length > 0 || job.viewer === "tradie") && (
@@ -258,6 +299,60 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                   </HiVisButton>
                 )}
               </>
+            )}
+            {job.actions.includes("add_part") && !partOpen && (
+              <GhostButton disabled={pending} onClick={() => setPartOpen(true)}>
+                🔩 Book a part to the job
+              </GhostButton>
+            )}
+            {job.actions.includes("add_part") && partOpen && (
+              <div className="rounded-2xl border border-field-line bg-field-900 p-4">
+                <p className="text-sm font-bold text-white">Part &amp; cost</p>
+                <input
+                  type="text"
+                  placeholder="What is it? (e.g. 15mm mixer cartridge)"
+                  value={partLabel}
+                  onChange={(e) => setPartLabel(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
+                />
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  placeholder="$ cost"
+                  value={partCost}
+                  onChange={(e) => setPartCost(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
+                />
+                <div className="mt-3 flex gap-2">
+                  <HiVisButton
+                    disabled={pending || !partLabel.trim() || !partCost}
+                    onClick={() => {
+                      const cents = Math.round(Number(partCost) * 100);
+                      act(async () => {
+                        const r = await addJobPartAction(token, wo, job.requestId, {
+                          label: partLabel.trim(),
+                          costCents: cents,
+                        });
+                        if (r.ok) {
+                          setPartOpen(false);
+                          setPartLabel("");
+                          setPartCost("");
+                        }
+                        return r;
+                      });
+                    }}
+                  >
+                    Book it
+                  </HiVisButton>
+                  <GhostButton disabled={pending} onClick={() => setPartOpen(false)}>
+                    Cancel
+                  </GhostButton>
+                </div>
+                <p className="mt-2 text-[10px] text-white/40">
+                  Small parts land instantly; big ones pause for a one-tap payer approval — no surprise bills.
+                </p>
+              </div>
             )}
             {job.actions.includes("propose_variance") && !varianceOpen && (
               <GhostButton disabled={pending} onClick={() => setVarianceOpen(true)}>

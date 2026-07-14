@@ -22,7 +22,7 @@ interface TradeState {
   online: boolean;
   offers: JobOfferView[];
   jobs: Array<{ requestId: string; title: string; address: string; state: string }>;
-  accuracy: { trustScore: number; completedJobs: number; variancePct: number | null } | null;
+  accuracy: { trustScore: number; completedJobs: number; variancePct: number | null; timeVariancePct: number | null } | null;
 }
 
 export function TradeHome({ token, name, initial }: { token: string; name: string; initial: TradeState }) {
@@ -161,7 +161,11 @@ export function TradeHome({ token, name, initial }: { token: string; name: strin
             <div>
               <p className="text-[10px] uppercase tracking-widest text-white/40">Your standing</p>
               <p className="text-sm text-white/70">
-                ±{initial.accuracy.variancePct?.toFixed(0) ?? 0}% quote accuracy · {initial.accuracy.completedJobs} job
+                ±{initial.accuracy.variancePct?.toFixed(0) ?? 0}% quote accuracy
+                {initial.accuracy.timeVariancePct !== null
+                  ? ` · ±${initial.accuracy.timeVariancePct.toFixed(0)}% time accuracy`
+                  : ""}{" "}
+                · {initial.accuracy.completedJobs} job
                 {initial.accuracy.completedJobs === 1 ? "" : "s"}
               </p>
             </div>

@@ -279,3 +279,34 @@ export async function setFastPayAction(token: string, enabled: boolean) {
 export async function generateDataPackAction(token: string, propertyId: string) {
   return (await getData()).generateReport(token, "property_data_pack", propertyId);
 }
+
+// ——— v8 R3.5: parts to job ———
+
+export async function addJobPartAction(
+  token: string,
+  workOrderId: string,
+  requestId: string,
+  input: { label: string; costCents: number },
+) {
+  const result = await (await getData()).addJobPart(token, workOrderId, input);
+  if (result.ok) {
+    await poke(jobTopic(requestId));
+    if (result.needsApproval && result.varianceId) {
+      await pushMoment(requestId, "payer", {
+        title: "A part is needed",
+        body: `${input.label} — adds $${Math.round(input.costCents / 100)}. Approve to continue?`,
+        path: `job/${requestId}`,
+        oneTap: {
+          kind: "decide_variance",
+          choices: [
+            { choice: "approve", label: "Approve part" },
+            { choice: "decline", label: "Not this time" },
+          ],
+          meta: { varianceId: result.varianceId },
+        },
+        tag: `variance-${requestId}`,
+      });
+    }
+  }
+  return result;
+}

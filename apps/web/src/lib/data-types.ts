@@ -408,10 +408,14 @@ export interface OwnerPortalContext {
   properties: PropertyDetail[];
 }
 
-/** Tradie accuracy (v6 §4.4) — estimate-vs-actual and its trust effect. */
+/** Tradie accuracy (v6 §4.4) — estimate-vs-actual and its trust effect.
+ * v8 R3.5 adds the time signal (the learning loop): the trust score is now
+ * blended 70% money / 30% time accuracy. */
 export interface TradieAccuracyView {
   completedJobs: number;
   avgAbsVariancePct: number | null;
+  /** Estimated-vs-actual on-site minutes, averaged. Null until history. */
+  avgAbsTimeVariancePct: number | null;
   trustScore: number;
   recentJobs: Array<{ requestTitle: string; quoteCents: number; invoiceCents: number; variancePct: number }>;
 }
@@ -496,10 +500,27 @@ export type JobAction =
   | "on_my_way"
   | "start"
   | "add_evidence"
+  | "add_part"
   | "mark_done"
   | "verify"
   | "propose_variance"
   | "decide_variance";
+
+/** v8 R3.5: a part booked to the job by the tradie (archive: Nelly's
+ * materials_cost). Rides the same variance/no-surprises money rules. */
+export interface JobPartView {
+  id: string;
+  label: string;
+  /** Hidden (null) for occupant viewers — money is the payer's business. */
+  costCents: number | null;
+  status: "active" | "pending_approval" | "declined";
+}
+
+/** v8 R3.5: estimated vs actual on-site time — the learning loop. */
+export interface OnSiteTimeView {
+  estimatedMinutes: number | null;
+  actualMinutes: number | null;
+}
 
 /** v8 R3: an on-site scope change, tracked as a first-class record. */
 export interface VarianceView {
@@ -529,6 +550,8 @@ export interface JobProjection {
     payoutCents: number | null;
     status: PaymentState | "none";
     label: string;
+    /** How this price was set — the payer's best-deal transparency line. */
+    basis: string | null;
   };
   slot: { startAt: string; endAt: string; label: string } | null;
   onTheWayAt: string | null;
@@ -538,6 +561,10 @@ export interface JobProjection {
   actions: JobAction[];
   /** Money-bearing — structurally hidden from occupant viewers. */
   variance: VarianceView | null;
+  /** Parts booked to the job (costs hidden from occupants). */
+  parts: JobPartView[];
+  /** The learning loop, on the glass. */
+  onSite: OnSiteTimeView;
 }
 
 export interface AddressRecordView {
@@ -890,6 +917,17 @@ export interface DataSource {
   /** Fast-Pay opt-in: money today, 2% factoring fee off the payout. */
   getFastPay(tradiePortalToken: string): Promise<{ enabled: boolean } | null>;
   setFastPay(tradiePortalToken: string, enabled: boolean): Promise<{ ok: boolean; error?: string }>;
+
+  // ——— v8 R3.5: parts to job + the learning loop ———
+
+  /** Book a part to the job. Within the playbook's variance threshold it
+   * lands instantly (authorized slice); beyond it, work pauses on the same
+   * payer Moment as any scope change — no surprise bills, ever. */
+  addJobPart(
+    tradiePortalToken: string,
+    workOrderId: string,
+    input: { label: string; costCents: number },
+  ): Promise<{ ok: boolean; needsApproval?: boolean; varianceId?: string; error?: string }>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

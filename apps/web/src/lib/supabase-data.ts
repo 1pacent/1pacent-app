@@ -32,6 +32,8 @@ import {
   summariseSpending,
   transition,
   unsatisfiedGates,
+  blendedAccuracyPct,
+  computeTimeAccuracy,
   validateQuoteSubmission,
   validateToken,
   varianceNeedsApproval,
@@ -1050,6 +1052,27 @@ export const supabaseData: DataSource = {
         avgAbsVariancePct: row.avg_abs_variance_pct,
       };
     }
+    // v8 R3.5: blend the time signal in, so ranking and Autopilot's trust
+    // floor see the whole picture (70% money / 30% time).
+    const { data: timed } = await db
+      .from("work_orders")
+      .select("tradie_contact_id, estimated_minutes, actual_minutes")
+      .in("tradie_contact_id", tradieContactIds)
+      .not("actual_minutes", "is", null)
+      .not("estimated_minutes", "is", null);
+    const timeAgg: Record<string, { sum: number; n: number }> = {};
+    for (const w of (timed ?? []) as Array<{ tradie_contact_id: string; estimated_minutes: number; actual_minutes: number }>) {
+      if (Number(w.estimated_minutes) <= 0) continue;
+      const acc = computeTimeAccuracy(Number(w.estimated_minutes), Number(w.actual_minutes));
+      (timeAgg[w.tradie_contact_id] ??= { sum: 0, n: 0 });
+      timeAgg[w.tradie_contact_id]!.sum += acc.absVariancePct;
+      timeAgg[w.tradie_contact_id]!.n += 1;
+    }
+    for (const [id, agg] of Object.entries(timeAgg)) {
+      const existing = summaries[id] ?? { completedJobs: agg.n, avgAbsVariancePct: null };
+      existing.avgAbsVariancePct = blendedAccuracyPct(existing.avgAbsVariancePct, agg.sum / agg.n);
+      summaries[id] = existing;
+    }
     return summaries;
   },
 
@@ -1570,7 +1593,24 @@ export const supabaseData: DataSource = {
       actor_id: `token:${resolved.id}`,
     });
     await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
-    await db.from("work_orders").update({ status: result.state }).eq("id", wo.id);
+    // The learning loop starts its clock (v8 R3.5): on-site start + the
+    // estimate this job carries (the playbook's typical duration).
+    const { data: reqPb } = await db
+      .from("maintenance_requests")
+      .select("playbook_key, category")
+      .eq("id", req.id)
+      .maybeSingle();
+    const playbook =
+      (reqPb?.playbook_key ? getPlaybook(reqPb.playbook_key) : null) ??
+      (reqPb ? playbookForCategory(reqPb.category as RequestCategory) : null);
+    await db
+      .from("work_orders")
+      .update({
+        status: result.state,
+        on_site_started_at: new Date().toISOString(),
+        estimated_minutes: playbook?.typicalMinutes ?? null,
+      })
+      .eq("id", wo.id);
     return { ok: true };
   },
 
@@ -2386,10 +2426,27 @@ export const supabaseData: DataSource = {
     const variances = rows.map((w) => Math.abs(Number(w.invoice_cents) - Number(w.quote_cents)) / Number(w.quote_cents));
     const avgAbsVariancePct =
       variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
+    // The learning loop's other half: estimated-vs-actual on-site time.
+    const { data: timedRows } = await db
+      .from("work_orders")
+      .select("estimated_minutes, actual_minutes")
+      .eq("tradie_contact_id", resolved.contact_id)
+      .not("actual_minutes", "is", null)
+      .not("estimated_minutes", "is", null)
+      .gt("estimated_minutes", 0);
+    const timeVariances = ((timedRows ?? []) as Array<{ estimated_minutes: number; actual_minutes: number }>).map(
+      (w) => computeTimeAccuracy(Number(w.estimated_minutes), Number(w.actual_minutes)).absVariancePct,
+    );
+    const avgAbsTimeVariancePct =
+      timeVariances.length > 0 ? timeVariances.reduce((a, b) => a + b, 0) / timeVariances.length : null;
     return {
       completedJobs: rows.length,
       avgAbsVariancePct,
-      trustScore: scoreTrust({ completedJobs: rows.length, avgAbsVariancePct }),
+      avgAbsTimeVariancePct,
+      trustScore: scoreTrust({
+        completedJobs: rows.length,
+        avgAbsVariancePct: blendedAccuracyPct(avgAbsVariancePct, avgAbsTimeVariancePct),
+      }),
       recentJobs,
     };
   },
@@ -2746,7 +2803,7 @@ export const supabaseData: DataSource = {
     const db = serviceClient();
     const { data: wo } = await db
       .from("work_orders")
-      .select("id, org_id, request_id, tradie_contact_id")
+      .select("id, org_id, request_id, tradie_contact_id, on_site_started_at, estimated_minutes")
       .eq("id", workOrderId)
       .maybeSingle();
     if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
@@ -2776,7 +2833,34 @@ export const supabaseData: DataSource = {
       payload: { note },
     });
     await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
-    await db.from("work_orders").update({ status: result.state, completion_note: note }).eq("id", wo.id);
+
+    // The learning loop closes (archive: TRADIE-JOBS-046): actual on-site
+    // minutes captured against the estimate and written to the ledger.
+    const actualMinutes = wo.on_site_started_at
+      ? Math.max(1, Math.round((Date.now() - new Date(wo.on_site_started_at).getTime()) / 60_000))
+      : null;
+    const estimated = wo.estimated_minutes != null ? Number(wo.estimated_minutes) : null;
+    await db
+      .from("work_orders")
+      .update({ status: result.state, completion_note: note, actual_minutes: actualMinutes })
+      .eq("id", wo.id);
+    if (actualMinutes !== null && estimated !== null && estimated > 0) {
+      const accuracy = computeTimeAccuracy(estimated, actualMinutes);
+      await db.from("events").insert({
+        org_id: req.org_id,
+        aggregate_type: "work_order",
+        aggregate_id: wo.id,
+        event_type: "actuals_captured",
+        actor_type: "system",
+        actor_id: "quintino:learning-loop",
+        payload: {
+          estimatedMinutes: estimated,
+          actualMinutes,
+          signedVariancePct: Math.round(accuracy.signedVariancePct),
+          rating: accuracy.rating,
+        },
+      });
+    }
     return { ok: true };
   },
 
@@ -2854,7 +2938,9 @@ export const supabaseData: DataSource = {
         .order("id", { ascending: true }),
       db
         .from("work_orders")
-        .select("id, tradie_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, contacts(full_name)")
+        .select(
+          "id, tradie_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, estimated_minutes, actual_minutes, contacts(full_name)",
+        )
         .eq("request_id", req.id)
         .maybeSingle(),
       db.from("payments").select("status, amount_cents").eq("request_id", req.id),
@@ -2876,6 +2962,8 @@ export const supabaseData: DataSource = {
       scheduled_start_at: string | null;
       scheduled_end_at: string | null;
       completion_note: string | null;
+      estimated_minutes: number | null;
+      actual_minutes: number | null;
       contacts: ContactJoin | ContactJoin[] | null;
     } | null;
     let tradieName = normalizeContact(woRow?.contacts ?? null)?.full_name ?? null;
@@ -2897,6 +2985,21 @@ export const supabaseData: DataSource = {
         return (t?.[0]?.full_name as string | undefined) ?? null;
       })(),
     ]);
+
+    let parts: JobSource["parts"] = [];
+    if (woRow) {
+      const { data: partRows } = await db
+        .from("job_parts")
+        .select("id, label, cost_cents, status")
+        .eq("work_order_id", woRow.id)
+        .order("created_at", { ascending: true });
+      parts = ((partRows ?? []) as Array<{ id: string; label: string; cost_cents: number; status: string }>).map((pt) => ({
+        id: pt.id,
+        label: pt.label,
+        costCents: Number(pt.cost_cents),
+        status: pt.status as JobSource["parts"][number]["status"],
+      }));
+    }
 
     let evidence: JobSource["evidence"] = [];
     if (woRow) {
@@ -2940,6 +3043,8 @@ export const supabaseData: DataSource = {
             scheduledStartAt: woRow.scheduled_start_at,
             scheduledEndAt: woRow.scheduled_end_at,
             completionNote: woRow.completion_note,
+            estimatedMinutes: woRow.estimated_minutes != null ? Number(woRow.estimated_minutes) : null,
+            actualMinutes: woRow.actual_minutes != null ? Number(woRow.actual_minutes) : null,
           }
         : null,
       tradie: tradieName ? { name: tradieName, verified: true } : null,
@@ -2957,6 +3062,7 @@ export const supabaseData: DataSource = {
             status: varianceRow.status as VarianceView["status"],
           }
         : null,
+      parts,
     };
     return projectJob(source, viewer);
   },
@@ -3510,6 +3616,100 @@ export const supabaseData: DataSource = {
     });
     return { ok: true };
   },
+
+  // ——— v8 R3.5: parts to job + the learning loop ———
+
+  async addJobPart(tradiePortalToken, workOrderId, input) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, request_id, tradie_contact_id, status, quote_cents, call_out_fee_cents")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if ((wo.status as RequestState) !== "in_progress") {
+      return { ok: false, error: "Parts are booked on site, while the job is in progress." };
+    }
+    const label = input.label.trim();
+    if (!label || !Number.isFinite(input.costCents) || input.costCents <= 0) {
+      return { ok: false, error: "A part needs a name and a cost." };
+    }
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, playbook_key, category")
+      .eq("id", wo.request_id)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Request not found." };
+    const playbook =
+      (req.playbook_key ? getPlaybook(req.playbook_key) : null) ?? playbookForCategory(req.category as RequestCategory);
+    const { data: payRows } = await db.from("payments").select("amount_cents, status").eq("request_id", req.id);
+    const bookedCents =
+      ((payRows ?? []) as Array<{ amount_cents: number; status: string }>)
+        .filter((p) => p.status !== "voided")
+        .reduce((s, p) => s + Number(p.amount_cents), 0) ||
+      Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+    const needsApproval = varianceNeedsApproval(playbook, bookedCents, bookedCents + input.costCents);
+
+    if (!needsApproval) {
+      const { error } = await db.from("job_parts").insert({
+        org_id: wo.org_id,
+        work_order_id: wo.id,
+        label,
+        cost_cents: input.costCents,
+        status: "active",
+      });
+      if (error) return { ok: false, error: error.message };
+      await db.from("events").insert({
+        org_id: wo.org_id,
+        aggregate_type: "work_order",
+        aggregate_id: wo.id,
+        event_type: "part_added",
+        actor_type: "tradie",
+        actor_id: `contact:${resolved.contact_id}`,
+        payload: { label, costCents: input.costCents, withinThreshold: true },
+      });
+      await applyVarianceSlice(db, req.id, wo.org_id, input.costCents);
+      return { ok: true, needsApproval: false };
+    }
+
+    // Beyond the threshold: the part rides the variance protocol — work
+    // pauses, the payer decides, no surprise bills.
+    const { data: variance, error: vError } = await db
+      .from("variances")
+      .insert({
+        org_id: wo.org_id,
+        request_id: req.id,
+        work_order_id: wo.id,
+        booked_cents: bookedCents,
+        new_total_cents: bookedCents + input.costCents,
+        reason: `Part needed: ${label}`,
+        status: "pending",
+      })
+      .select("id")
+      .single();
+    if (vError || !variance) return { ok: false, error: vError?.message ?? "Could not record the part." };
+    const { error: pError } = await db.from("job_parts").insert({
+      org_id: wo.org_id,
+      work_order_id: wo.id,
+      label,
+      cost_cents: input.costCents,
+      status: "pending_approval",
+      variance_id: variance.id,
+    });
+    if (pError) return { ok: false, error: pError.message };
+    await db.from("events").insert({
+      org_id: wo.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: "part_proposed",
+      actor_type: "tradie",
+      actor_id: `contact:${resolved.contact_id}`,
+      payload: { label, costCents: input.costCents, varianceId: variance.id },
+    });
+    return { ok: true, needsApproval: true, varianceId: variance.id as string };
+  },
 };
 
 /** An approved (or auto-applied) scope increase becomes a variance payment
@@ -3586,6 +3786,11 @@ async function decideVarianceCore(
     actor_id: actorId,
     payload: { bookedCents: Number(v.booked_cents), newTotalCents: Number(v.new_total_cents) },
   });
+  // Parts riding this variance follow the decision.
+  await db
+    .from("job_parts")
+    .update({ status: decision === "approve" ? "active" : "declined" })
+    .eq("variance_id", v.id);
   if (decision === "approve") {
     await applyVarianceSlice(db, v.request_id, v.org_id, Number(v.new_total_cents) - Number(v.booked_cents));
   }
@@ -3708,10 +3913,17 @@ async function verifySettleCore(
     psp: string;
     psp_ref: string | null;
   }>).filter((p) => p.status !== "voided");
+  const { data: partRows } = await db
+    .from("job_parts")
+    .select("cost_cents, status")
+    .eq("work_order_id", wo.id);
+  const activePartsCents = ((partRows ?? []) as Array<{ cost_cents: number; status: string }>)
+    .filter((p) => p.status === "active")
+    .reduce((sum, p) => sum + Number(p.cost_cents), 0);
   const settleAmount =
     openSlices.length > 0
       ? openSlices.reduce((sum, p) => sum + Number(p.amount_cents), 0)
-      : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0);
+      : Number(wo.quote_cents ?? 0) + Number(wo.call_out_fee_cents ?? 0) + activePartsCents;
 
   const invoiceResult = transition(verifyResult.state, "invoice", "system");
   if (!invoiceResult.ok) return { ok: true };

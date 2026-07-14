@@ -127,6 +127,34 @@ approved total → Data Pack generates. Build green.
    (`STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` remain for Stripe go-live.)
 3. ✅ n8n workflows imported + activated — see the consolidation below.
 
+## R3.5 — The learning loop, parts-to-job, trust blues (shipped 2026-07-14)
+
+Resurrected from the archive (TRADIE-JOBS-046-Capture-Job-Actuals,
+TRADIE-TOOL-Job-Actuals-Capture, Nelly's `materials_cost`) onto the v8 rails:
+
+- **Parts booked to job** — `job_parts` (0020). A part rides the same
+  no-surprises money rules as labour: within the playbook's variance
+  threshold it lands instantly as an authorized slice; beyond it, work
+  pauses on the payer's one-tap Moment (same `decide_variance` rail), and
+  the part activates or declines with the decision. Occupants see part
+  labels, never costs. Settlement sums active parts.
+- **Time actuals → the moat** — `on_site_started_at` / `estimated_minutes`
+  / `actual_minutes` on work orders. `start` starts the clock (estimate =
+  playbook's typical duration), completion captures actual minutes and
+  writes an `actuals_captured` ledger event (actor `quintino:learning-loop`).
+  `computeTimeAccuracy` + `blendedAccuracyPct` in core: the trust score is
+  now 70% money accuracy / 30% time accuracy, flowing into quote ranking
+  and Autopilot's trust floor. Tradie card shows ±time accuracy.
+- **Best-deal transparency** — every payer money line now carries its
+  basis: fixed band → "from real completed jobs nearby, no quote round";
+  rate card → "published rates"; quote race → "ranked on trust, price,
+  speed". Occupant projections stay money-free.
+- **Trust blues** — the Hi-Vis bottle-green field is now deep harbour navy
+  with signal-blue primary actions (token values swapped; class names kept).
+  Icons/manifest/theme-color updated.
+
+Migration `0020_actuals_and_parts.sql` applied to live Supabase 2026-07-14.
+
 ## n8n consolidation (2026-07-13)
 
 **Rule (operator-stated): the VPS runs ONE shared n8n for every application**

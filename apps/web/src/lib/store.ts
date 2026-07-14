@@ -35,6 +35,8 @@ import {
   type Playbook,
   type PropertyComplianceProfile,
   type PropertyComplianceStatus,
+  blendedAccuracyPct,
+  computeTimeAccuracy,
   paymentScheduleFor,
   splitPaymentWithFastPay,
   varianceNeedsApproval,
@@ -426,6 +428,10 @@ interface DemoWorkOrder {
   scheduledStartAt?: string | null;
   scheduledEndAt?: string | null;
   onTheWayAt?: string | null;
+  /** v8 R3.5: the learning loop. */
+  onSiteStartedAt?: string | null;
+  estimatedMinutes?: number | null;
+  actualMinutes?: number | null;
 }
 
 /** v8: payments mirror the (simulated) PSP — no custody, ever. */
@@ -1316,7 +1322,16 @@ export const demoData: DataSource = {
         .map((w) => Math.abs(w.invoiceCents! - w.quoteCents!) / w.quoteCents!);
       const avgAbsVariancePct =
         variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
-      summaries[id] = { completedJobs: completed.length, avgAbsVariancePct };
+      // v8 R3.5: blend the time signal (70% money / 30% time).
+      const timeVariances = workOrders
+        .filter((w) => w.tradieContactId === id && w.actualMinutes != null && (w.estimatedMinutes ?? 0) > 0)
+        .map((w) => computeTimeAccuracy(w.estimatedMinutes!, w.actualMinutes!).absVariancePct);
+      const avgAbsTimeVariancePct =
+        timeVariances.length > 0 ? timeVariances.reduce((a, b) => a + b, 0) / timeVariances.length : null;
+      summaries[id] = {
+        completedJobs: completed.length,
+        avgAbsVariancePct: blendedAccuracyPct(avgAbsVariancePct, avgAbsTimeVariancePct),
+      };
     }
     return summaries;
   },
@@ -1583,6 +1598,10 @@ export const demoData: DataSource = {
     if (!result.ok) return { ok: false as const, error: `Cannot start a job from state "${current}".` };
     request.events.push({ eventType: "start_work", actorType: "tradie", actorId: `token:${tradiePortalToken}`, at: new Date().toISOString() });
     wo.status = result.state;
+    // The learning loop starts its clock (v8 R3.5).
+    const playbook = (request.playbookKey ? getPlaybook(request.playbookKey) : null) ?? playbookForCategory(request.category);
+    wo.onSiteStartedAt = new Date().toISOString();
+    wo.estimatedMinutes = playbook.typicalMinutes;
     return { ok: true as const };
   },
 
@@ -1607,6 +1626,19 @@ export const demoData: DataSource = {
     });
     wo.status = result.state;
     wo.completionNote = note;
+    // The learning loop closes (archive: TRADIE-JOBS-046).
+    if (wo.onSiteStartedAt) {
+      wo.actualMinutes = Math.max(1, Math.round((Date.now() - new Date(wo.onSiteStartedAt).getTime()) / 60_000));
+      if (wo.estimatedMinutes && wo.estimatedMinutes > 0) {
+        const accuracy = computeTimeAccuracy(wo.estimatedMinutes, wo.actualMinutes);
+        demoWorkOrderEvents.push({
+          workOrderId: wo.id,
+          eventType: "actuals_captured",
+          at: new Date().toISOString(),
+          note: `est ${wo.estimatedMinutes}m, actual ${wo.actualMinutes}m (${accuracy.rating})`,
+        });
+      }
+    }
     return { ok: true as const };
   },
 
@@ -2241,6 +2273,19 @@ export const demoData: DataSource = {
     });
     wo.status = result.state;
     wo.completionNote = note;
+    // The learning loop closes (archive: TRADIE-JOBS-046).
+    if (wo.onSiteStartedAt) {
+      wo.actualMinutes = Math.max(1, Math.round((Date.now() - new Date(wo.onSiteStartedAt).getTime()) / 60_000));
+      if (wo.estimatedMinutes && wo.estimatedMinutes > 0) {
+        const accuracy = computeTimeAccuracy(wo.estimatedMinutes, wo.actualMinutes);
+        demoWorkOrderEvents.push({
+          workOrderId: wo.id,
+          eventType: "actuals_captured",
+          at: new Date().toISOString(),
+          note: `est ${wo.estimatedMinutes}m, actual ${wo.actualMinutes}m (${accuracy.rating})`,
+        });
+      }
+    }
     return { ok: true as const };
   },
 
@@ -2691,6 +2736,69 @@ export const demoData: DataSource = {
     fastPayByTradie[resolved.contactId] = enabled;
     return { ok: true };
   },
+
+  // ——— v8 R3.5: parts to job + the learning loop ———
+
+  async addJobPart(tradiePortalToken, workOrderId, input) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request || requestState(request) !== "in_progress") {
+      return { ok: false, error: "Parts are booked on site, while the job is in progress." };
+    }
+    const label = input.label.trim();
+    if (!label || !Number.isFinite(input.costCents) || input.costCents <= 0) {
+      return { ok: false, error: "A part needs a name and a cost." };
+    }
+    const playbook = (request.playbookKey ? getPlaybook(request.playbookKey) : null) ?? playbookForCategory(request.category);
+    const bookedCents =
+      payments
+        .filter((pmt) => pmt.requestId === request.id && pmt.status !== "voided")
+        .reduce((s, pmt) => s + pmt.amountCents, 0) ||
+      (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+    const needsApproval = varianceNeedsApproval(playbook, bookedCents, bookedCents + input.costCents);
+
+    if (!needsApproval) {
+      demoJobParts.push({ id: `part-${++demoPartSeq}`, workOrderId: wo.id, label, costCents: input.costCents, status: "active" });
+      demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "part_added", at: new Date().toISOString(), note: label });
+      const split = splitPayment(input.costCents);
+      payments.push({
+        id: `pay-${++demoPaymentSeq}`,
+        requestId: request.id,
+        workOrderId: wo.id,
+        status: "authorized",
+        amountCents: input.costCents,
+        platformFeeCents: split.platformFeeCents,
+        payoutCents: split.tradiePayoutCents,
+        kind: "variance",
+      });
+      return { ok: true, needsApproval: false };
+    }
+
+    const variance: DemoVariance = {
+      id: `var-${++demoVarianceSeq}`,
+      requestId: request.id,
+      workOrderId: wo.id,
+      bookedCents,
+      newTotalCents: bookedCents + input.costCents,
+      reason: `Part needed: ${label}`,
+      status: "pending",
+      decidedAt: null,
+    };
+    demoVariances.push(variance);
+    demoJobParts.push({
+      id: `part-${++demoPartSeq}`,
+      workOrderId: wo.id,
+      label,
+      costCents: input.costCents,
+      status: "pending_approval",
+      varianceId: variance.id,
+    });
+    demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "part_proposed", at: new Date().toISOString(), note: label });
+    return { ok: true, needsApproval: true, varianceId: variance.id };
+  },
 };
 
 // ——— v8 R2 helpers ———
@@ -2715,10 +2823,13 @@ function demoVerifySettle(
   // certificate if this was a compliance playbook — Penny's whole job.
   const playbook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
   const openSlices = payments.filter((p) => p.requestId === request.id && p.status !== "voided");
+  const activePartsCents = demoJobParts
+    .filter((pt) => pt.workOrderId === wo.id && pt.status === "active")
+    .reduce((s, pt) => s + pt.costCents, 0);
   const settleAmount =
     openSlices.length > 0
       ? openSlices.reduce((s, p) => s + p.amountCents, 0)
-      : (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0);
+      : (wo.quoteCents ?? 0) + (wo.callOutFeeCents ?? 0) + activePartsCents;
 
   const invoiceResult = transition(verifyResult.state, "invoice", "system");
   if (invoiceResult.ok) {
@@ -2835,6 +2946,8 @@ function demoJobSource(request: DemoRequest): JobSource {
           scheduledStartAt: wo.scheduledStartAt ?? null,
           scheduledEndAt: wo.scheduledEndAt ?? null,
           completionNote: wo.completionNote,
+          estimatedMinutes: wo.estimatedMinutes ?? null,
+          actualMinutes: wo.actualMinutes ?? null,
         }
       : null,
     tradie: tradie ? { name: tradie.fullName, verified: true } : null,
@@ -2848,6 +2961,11 @@ function demoJobSource(request: DemoRequest): JobSource {
           .map((e) => ({ gate: e.gate, dataUrl: e.dataUrl, note: e.note, at: e.createdAt }))
       : [],
     variance: latestDemoVariance(request.id),
+    parts: wo
+      ? demoJobParts
+          .filter((pt) => pt.workOrderId === wo.id)
+          .map((pt) => ({ id: pt.id, label: pt.label, costCents: pt.costCents, status: pt.status }))
+      : [],
   };
 }
 
@@ -2907,6 +3025,18 @@ function ensureDemoPaymentPlan(request: DemoRequest, totalCents: number, workOrd
   }
 }
 
+/** v8 R3.5: parts booked to jobs (parity: job_parts). */
+interface DemoJobPart {
+  id: string;
+  workOrderId: string;
+  label: string;
+  costCents: number;
+  status: "active" | "pending_approval" | "declined";
+  varianceId?: string | null;
+}
+const demoJobParts: DemoJobPart[] = [];
+let demoPartSeq = 0;
+
 /** Demo stand-in for the live store's work_order aggregate events —
  * variance/payment events never enter the request's state-machine stream. */
 const demoWorkOrderEvents: Array<{ workOrderId: string; eventType: string; at: string; note?: string }> = [];
@@ -2921,6 +3051,9 @@ function demoDecideVariance(
   if (v.status !== "pending") return { ok: false, error: "This change was already decided." };
   v.status = decision === "approve" ? "approved" : "declined";
   v.decidedAt = new Date().toISOString();
+  for (const pt of demoJobParts.filter((x) => x.varianceId === v.id)) {
+    pt.status = decision === "approve" ? "active" : "declined";
+  }
   demoWorkOrderEvents.push({
     workOrderId: v.workOrderId,
     eventType: decision === "approve" ? "variance_approved" : "variance_declined",
@@ -3161,10 +3294,19 @@ function tradieAccuracyFor(tradieContactId: string): TradieAccuracyView {
   const variances = completed.map((w) => Math.abs(w.invoiceCents! - w.quoteCents!) / w.quoteCents!);
   const avgAbsVariancePct =
     variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
+  const timeVariances = workOrders
+    .filter((w) => w.tradieContactId === tradieContactId && w.actualMinutes != null && (w.estimatedMinutes ?? 0) > 0)
+    .map((w) => computeTimeAccuracy(w.estimatedMinutes!, w.actualMinutes!).absVariancePct);
+  const avgAbsTimeVariancePct =
+    timeVariances.length > 0 ? timeVariances.reduce((a, b) => a + b, 0) / timeVariances.length : null;
   return {
     completedJobs: completed.length,
     avgAbsVariancePct,
-    trustScore: scoreTrust({ completedJobs: completed.length, avgAbsVariancePct }),
+    avgAbsTimeVariancePct,
+    trustScore: scoreTrust({
+      completedJobs: completed.length,
+      avgAbsVariancePct: blendedAccuracyPct(avgAbsVariancePct, avgAbsTimeVariancePct),
+    }),
     recentJobs,
   };
 }

@@ -79,7 +79,7 @@ export function AutopilotCard({ token, initial }: { token: string; initial: Auto
               onChange={(e) => setCapIdx(Number(e.target.value))}
               onPointerUp={() => save({})}
               onKeyUp={() => save({})}
-              className="mt-1 w-full accent-[#FFD60A]"
+              className="mt-1 w-full accent-[#38BDF8]"
             />
           </label>
           <label className="block">
@@ -96,7 +96,7 @@ export function AutopilotCard({ token, initial }: { token: string; initial: Auto
               onChange={(e) => setTrustIdx(Number(e.target.value))}
               onPointerUp={() => save({})}
               onKeyUp={() => save({})}
-              className="mt-1 w-full accent-[#FFD60A]"
+              className="mt-1 w-full accent-[#38BDF8]"
             />
           </label>
           <button

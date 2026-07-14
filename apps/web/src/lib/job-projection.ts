@@ -10,7 +10,15 @@ import {
   type PaymentState,
   type RequestEvent,
 } from "@1pacent/core";
-import type { JobAction, JobEvidenceView, JobProjection, JobViewer, RequestView, VarianceView } from "./data-types";
+import type {
+  JobAction,
+  JobEvidenceView,
+  JobPartView,
+  JobProjection,
+  JobViewer,
+  RequestView,
+  VarianceView,
+} from "./data-types";
 
 /**
  * The shared Job Screen projector (Developer Brief v8 §3): one function, a
@@ -28,6 +36,9 @@ export interface JobSource {
     scheduledStartAt: string | null;
     scheduledEndAt: string | null;
     completionNote: string | null;
+    /** v8 R3.5: the learning loop. */
+    estimatedMinutes: number | null;
+    actualMinutes: number | null;
   } | null;
   tradie: { name: string; verified: boolean } | null;
   ownerName: string | null;
@@ -37,6 +48,8 @@ export interface JobSource {
   evidence: JobEvidenceView[];
   /** Latest variance on this job, if any (v8 R3). */
   variance: VarianceView | null;
+  /** Parts booked to the job (v8 R3.5). */
+  parts: JobPartView[];
 }
 
 const ARC_LABELS: Record<JobArcStep, string> = {
@@ -89,10 +102,25 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
   if (source.pmName) parties.push({ role: "pm", name: source.pmName, verified: false });
   if (source.tradie) parties.push({ role: "tradie", name: source.tradie.name, verified: source.tradie.verified });
 
+  // How this price was set — the payer's best-deal transparency (v8 R3.5).
+  const basisByModel: Record<string, string> = {
+    fixed_band: "Fixed price from real completed jobs like this one nearby — no quote round, no padding.",
+    rate_card: "The tradie's published rate card — the same rates every customer gets.",
+    quote_race: "Competitive quotes, ranked on trust, price and speed — the recommended pick is the network's honest read.",
+  };
+  const basis = basisByModel[playbook.pricing.model] ?? null;
+
   // Money visibility is a structural rule, not copy.
   let money: JobProjection["money"];
   if (!source.payment) {
-    money = { visible: false, amountCents: null, payoutCents: null, status: "none", label: "Quoted job — price on acceptance" };
+    money = {
+      visible: false,
+      amountCents: null,
+      payoutCents: null,
+      status: "none",
+      label: "Quoted job — price on acceptance",
+      basis: viewer === "occupant" ? null : basis,
+    };
   } else if (viewer === "tradie") {
     money = {
       visible: true,
@@ -105,6 +133,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
           : source.payment.status === "captured"
             ? "Captured — payout on the way"
             : "Your payout, locked at booking",
+      basis,
     };
   } else if (viewer === "occupant") {
     money = {
@@ -113,6 +142,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
       payoutCents: null,
       status: source.payment.status,
       label: "No cost to you — covered by your rental provider",
+      basis: null,
     };
   } else {
     money = {
@@ -126,6 +156,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
           : source.payment.status === "captured" || source.payment.status === "transferred"
             ? "Charged on your verification"
             : "Authorization released",
+      basis,
     };
   }
 
@@ -154,6 +185,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
     if (request.state === "scheduled") actions.push("start");
     if (request.state === "in_progress") {
       actions.push("add_evidence");
+      actions.push("add_part");
       // Work pauses on a pending variance — the payer decides before more
       // scope lands (v8 §4).
       if (!pendingVariance) {
@@ -192,5 +224,11 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
     // Variances carry dollar figures — the occupant's projection drops them
     // entirely (money is the payer's business, structurally).
     variance: viewer === "occupant" ? null : source.variance,
+    // Occupants see WHAT was fitted, never what it cost.
+    parts: source.parts.map((p) => (viewer === "occupant" ? { ...p, costCents: null } : p)),
+    onSite: {
+      estimatedMinutes: source.workOrder?.estimatedMinutes ?? null,
+      actualMinutes: source.workOrder?.actualMinutes ?? null,
+    },
   };
 }
