@@ -953,7 +953,14 @@ export interface DataSource {
   setAssetDetails(
     tradiePortalToken: string,
     workOrderId: string,
-    input: { manufacturer: string; model: string; serial: string },
+    input: {
+      manufacturer: string;
+      model: string;
+      serial: string;
+      /** When the TRADIE bought the unit: their receipt + the manufacturer
+       * warranty it establishes. Any party may hold the proof of purchase. */
+      receipt?: { dataUrl: string; purchasedAt: string; warrantyMonths: number } | null;
+    },
   ): Promise<{ ok: boolean; error?: string }>;
 
   /** The payer attaches proof of purchase (e.g. the aircon THEY bought) to

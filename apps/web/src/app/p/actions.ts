@@ -286,7 +286,12 @@ export async function setAssetDetailsAction(
   token: string,
   workOrderId: string,
   requestId: string,
-  input: { manufacturer: string; model: string; serial: string },
+  input: {
+    manufacturer: string;
+    model: string;
+    serial: string;
+    receipt?: { dataUrl: string; purchasedAt: string; warrantyMonths: number } | null;
+  },
 ) {
   const result = await (await getData()).setAssetDetails(token, workOrderId, input);
   if (result.ok) await poke(jobTopic(requestId));

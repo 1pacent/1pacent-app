@@ -50,7 +50,11 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   const [assetModel, setAssetModel] = useState("");
   const [assetSerial, setAssetSerial] = useState("");
   const [assetSaved, setAssetSaved] = useState(false);
+  const [assetReceipt, setAssetReceipt] = useState<string | null>(null);
+  const [assetPurchased, setAssetPurchased] = useState("");
+  const [assetWarrantyMonths, setAssetWarrantyMonths] = useState("60");
   const varPhotoRef = useRef<HTMLInputElement | null>(null);
+  const receiptRef = useRef<HTMLInputElement | null>(null);
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -387,6 +391,39 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                   className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30" />
                 <input type="text" placeholder="Serial number" value={assetSerial} onChange={(e) => setAssetSerial(e.target.value)}
                   className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30" />
+                <input
+                  ref={receiptRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  hidden
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setAssetReceipt(await compressPhoto(file));
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => receiptRef.current?.click()}
+                  className="mt-2 w-full rounded-xl border border-field-line px-3 py-2.5 text-sm font-semibold text-white/70 active:scale-[0.97]"
+                >
+                  {assetReceipt ? "🧾 Receipt attached ✓ (tap to retake)" : "🧾 Bought it yourself? Snap the receipt"}
+                </button>
+                {assetReceipt && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <label className="text-[9px] uppercase tracking-wide text-white/40">
+                      Purchased
+                      <input type="date" value={assetPurchased} onChange={(e) => setAssetPurchased(e.target.value)}
+                        className="mt-0.5 w-full rounded-lg border border-field-line bg-field-950 px-2 py-1.5 text-xs text-white" />
+                    </label>
+                    <label className="text-[9px] uppercase tracking-wide text-white/40">
+                      Mfr warranty (months)
+                      <input type="number" min={0} max={240} value={assetWarrantyMonths} onChange={(e) => setAssetWarrantyMonths(e.target.value)}
+                        className="mt-0.5 w-full rounded-lg border border-field-line bg-field-950 px-2 py-1.5 text-xs text-white" />
+                    </label>
+                  </div>
+                )}
                 <div className="mt-3 flex gap-2">
                   <HiVisButton
                     disabled={pending || (!assetMake.trim() && !assetModel.trim() && !assetSerial.trim())}
@@ -396,6 +433,10 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                           manufacturer: assetMake,
                           model: assetModel,
                           serial: assetSerial,
+                          receipt:
+                            assetReceipt && assetPurchased
+                              ? { dataUrl: assetReceipt, purchasedAt: assetPurchased, warrantyMonths: Number(assetWarrantyMonths) || 0 }
+                              : null,
                         });
                         if (r.ok) {
                           setAssetOpen(false);

@@ -438,6 +438,10 @@ interface DemoWorkOrder {
   assetManufacturer?: string | null;
   assetModel?: string | null;
   assetSerial?: string | null;
+  /** v8 R4c: the tradie's proof of purchase (they bought the unit). */
+  receiptDataUrl?: string | null;
+  assetPurchasedAt?: string | null;
+  assetWarrantyMonths?: number | null;
 }
 
 /** v8: payments mirror the (simulated) PSP — no custody, ever. */
@@ -2850,10 +2854,16 @@ export const demoData: DataSource = {
     const manufacturer = input.manufacturer.trim().slice(0, 80);
     const model = input.model.trim().slice(0, 80);
     const serial = input.serial.trim().slice(0, 80);
-    if (!manufacturer && !model && !serial) return { ok: false, error: "Nothing to record." };
+    const receipt = input.receipt?.dataUrl?.startsWith("data:") ? input.receipt : null;
+    if (!manufacturer && !model && !serial && !receipt) return { ok: false, error: "Nothing to record." };
     wo.assetManufacturer = manufacturer || null;
     wo.assetModel = model || null;
     wo.assetSerial = serial || null;
+    if (receipt) {
+      wo.receiptDataUrl = receipt.dataUrl;
+      wo.assetPurchasedAt = receipt.purchasedAt || null;
+      wo.assetWarrantyMonths = Math.max(0, Math.min(240, Math.round(receipt.warrantyMonths))) || null;
+    }
     demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "asset_identified", at: new Date().toISOString(), note: `${manufacturer} ${model} ${serial}`.trim() });
     return { ok: true };
   },
@@ -3046,6 +3056,13 @@ function demoVerifySettle(
       if (wo.assetManufacturer) asset.manufacturer = wo.assetManufacturer;
       if (wo.assetModel) asset.model = wo.assetModel;
       if (wo.assetSerial) asset.serialNumber = wo.assetSerial;
+      // The tradie's receipt (they bought the unit) — never overwrites one
+      // already on file.
+      if (wo.receiptDataUrl && !asset.receiptDataUrl) {
+        asset.receiptDataUrl = wo.receiptDataUrl;
+        asset.purchasedAt = wo.assetPurchasedAt ?? null;
+        asset.manufacturerWarrantyMonths = wo.assetWarrantyMonths ?? null;
+      }
       wo.assetId = asset.id;
       if (playbook.warrantyDefaultMonths > 0) {
         wo.warrantyExpiresAt = new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString();

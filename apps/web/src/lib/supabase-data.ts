@@ -3782,10 +3782,22 @@ export const supabaseData: DataSource = {
     const manufacturer = input.manufacturer.trim().slice(0, 80);
     const model = input.model.trim().slice(0, 80);
     const serial = input.serial.trim().slice(0, 80);
-    if (!manufacturer && !model && !serial) return { ok: false, error: "Nothing to record." };
+    const receipt = input.receipt?.dataUrl?.startsWith("data:") ? input.receipt : null;
+    if (!manufacturer && !model && !serial && !receipt) return { ok: false, error: "Nothing to record." };
     await db
       .from("work_orders")
-      .update({ asset_manufacturer: manufacturer || null, asset_model: model || null, asset_serial: serial || null })
+      .update({
+        asset_manufacturer: manufacturer || null,
+        asset_model: model || null,
+        asset_serial: serial || null,
+        ...(receipt
+          ? {
+              receipt_data_url: receipt.dataUrl,
+              asset_purchased_at: receipt.purchasedAt || null,
+              asset_warranty_months: Math.max(0, Math.min(240, Math.round(receipt.warrantyMonths))) || null,
+            }
+          : {}),
+      })
       .eq("id", wo.id);
     await db.from("events").insert({
       org_id: wo.org_id,
@@ -3794,7 +3806,7 @@ export const supabaseData: DataSource = {
       event_type: "asset_identified",
       actor_type: "tradie",
       actor_id: `contact:${resolved.contact_id}`,
-      payload: { manufacturer, model, serial },
+      payload: { manufacturer, model, serial, receiptAttached: Boolean(receipt) },
     });
     return { ok: true };
   },
@@ -4022,7 +4034,9 @@ async function verifySettleCore(
 
   const { data: wo } = await db
     .from("work_orders")
-    .select("id, tradie_contact_id, quote_cents, call_out_fee_cents, asset_manufacturer, asset_model, asset_serial")
+    .select(
+      "id, tradie_contact_id, quote_cents, call_out_fee_cents, asset_manufacturer, asset_model, asset_serial, receipt_data_url, asset_purchased_at, asset_warranty_months",
+    )
     .eq("request_id", req.id)
     .maybeSingle();
   if (!wo) return { ok: true };
@@ -4079,10 +4093,30 @@ async function verifySettleCore(
       .eq("category", playbook.category)
       .eq("label", playbook.assetLabel)
       .maybeSingle();
+    if (wo.receipt_data_url) {
+      // The tradie bought the unit: their receipt establishes the
+      // manufacturer warranty. Never overwrites a receipt already on file.
+      Object.assign(identity, {
+        receipt_data_url: wo.receipt_data_url,
+        purchased_at: wo.asset_purchased_at,
+        manufacturer_warranty_months: wo.asset_warranty_months,
+      });
+    }
     if (existingAsset) {
       assetId = existingAsset.id;
       // The id-plate truth the tradie recorded on site lands on the record.
-      if (Object.keys(identity).length > 0) await db.from("property_assets").update(identity).eq("id", assetId);
+      const { data: current } = await db
+        .from("property_assets")
+        .select("receipt_data_url")
+        .eq("id", assetId)
+        .maybeSingle();
+      const patch: Record<string, unknown> = { ...identity };
+      if (current?.receipt_data_url) {
+        delete patch.receipt_data_url;
+        delete patch.purchased_at;
+        delete patch.manufacturer_warranty_months;
+      }
+      if (Object.keys(patch).length > 0) await db.from("property_assets").update(patch).eq("id", assetId);
     } else {
       const { data: created } = await db
         .from("property_assets")
