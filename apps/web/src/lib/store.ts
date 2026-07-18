@@ -2801,6 +2801,113 @@ export const demoData: DataSource = {
   },
 };
 
+// ——— Admin oversight (customer-site release): demo parity ———
+
+interface DemoJoinRequest {
+  persona: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  suburb: string | null;
+  message: string | null;
+  createdAt: string;
+}
+const demoJoinRequestRows: DemoJoinRequest[] = [];
+
+export function recordDemoJoinRequest(input: Omit<DemoJoinRequest, "createdAt">): void {
+  demoJoinRequestRows.push({ ...input, createdAt: new Date().toISOString() });
+}
+
+/** The operator god-view, computed from the demo arrays — structural parity
+ * with lib/admin-data.ts's live queries. */
+export function demoAdminOverview() {
+  const OPEN = new Set(["reported", "triaged", "pending_approval", "approved", "quoting", "scheduled", "in_progress"]);
+  const PENDING = new Set(["evidence_pending", "verified", "invoiced"]);
+  const CLOSED = new Set(["paid", "closed"]);
+  const bucketOf = (st: string) => (OPEN.has(st) ? "open" : PENDING.has(st) ? "pending" : CLOSED.has(st) ? "closed" : null);
+
+  const pipeline = {
+    open: { count: 0, valueCents: 0 },
+    pending: { count: 0, valueCents: 0 },
+    closed: { count: 0, valueCents: 0 },
+  } as Record<"open" | "pending" | "closed", { count: number; valueCents: number }>;
+  const transactions: Array<{
+    requestId: string; title: string; address: string; bucket: "open" | "pending" | "closed";
+    state: string; amountCents: number | null; feeCents: number | null; at: string;
+  }> = [];
+  const valueOf = (requestId: string) => {
+    const slices = payments.filter((pm) => pm.requestId === requestId && pm.status !== "voided");
+    if (slices.length === 0) return { amount: null as number | null, fee: null as number | null };
+    return {
+      amount: slices.reduce((s, pm) => s + pm.amountCents, 0),
+      fee: slices.reduce((s, pm) => s + pm.platformFeeCents + (pm.fastpayFeeCents ?? 0), 0),
+    };
+  };
+  for (const r of [...requests].sort((a, b) => Date.parse(b.reportedAt) - Date.parse(a.reportedAt))) {
+    const state = requestState(r);
+    const bucket = bucketOf(state);
+    if (!bucket) continue;
+    const { amount, fee } = valueOf(r.id);
+    pipeline[bucket].count += 1;
+    pipeline[bucket].valueCents += amount ?? 0;
+    if (transactions.length < 25) {
+      const property = properties.find((p) => p.id === r.propertyId);
+      transactions.push({
+        requestId: r.id, title: r.title, address: property ? `${property.address}, ${property.suburb}` : "",
+        bucket, state, amountCents: amount, feeCents: fee, at: r.reportedAt,
+      });
+    }
+  }
+
+  const monthlyMap = new Map<string, { month: string; jobsClosed: number; grossCents: number; platformFeeCents: number; fastpayFeeCents: number }>();
+  const nowMonth = new Date().toISOString().slice(0, 7);
+  for (const pm of payments) {
+    if (pm.status !== "transferred" && pm.status !== "captured") continue;
+    const m = monthlyMap.get(nowMonth) ?? { month: nowMonth, jobsClosed: 0, grossCents: 0, platformFeeCents: 0, fastpayFeeCents: 0 };
+    m.grossCents += pm.amountCents;
+    m.platformFeeCents += pm.platformFeeCents;
+    m.fastpayFeeCents += pm.fastpayFeeCents ?? 0;
+    monthlyMap.set(nowMonth, m);
+  }
+  for (const r of requests) {
+    if (!CLOSED.has(requestState(r))) continue;
+    const m = monthlyMap.get(nowMonth) ?? { month: nowMonth, jobsClosed: 0, grossCents: 0, platformFeeCents: 0, fastpayFeeCents: 0 };
+    m.jobsClosed += 1;
+    monthlyMap.set(nowMonth, m);
+  }
+
+  const byPm = new Map<string, { pmName: string; properties: number; openJobs: number; addresses: string[] }>();
+  for (const p of properties) {
+    const pmName = (p.pmContactId && contacts.find((c) => c.id === p.pmContactId)?.fullName) || "Self-managed";
+    const g = byPm.get(pmName) ?? { pmName, properties: 0, openJobs: 0, addresses: [] };
+    g.properties += 1;
+    g.addresses.push(`${p.address}, ${p.suburb}`);
+    g.openJobs += requests.filter((r) => r.propertyId === p.id && OPEN.has(requestState(r))).length;
+    byPm.set(pmName, g);
+  }
+
+  return {
+    dataSource: "demo" as const,
+    hubspot: { configured: Boolean(process.env.HUBSPOT_ACCESS_TOKEN) },
+    counts: {
+      properties: properties.length,
+      propertyManagers: contacts.filter((c) => c.kind === "property_manager").length,
+      owners: contacts.filter((c) => c.kind === "owner").length,
+      tradies: contacts.filter((c) => c.kind === "tradie").length,
+      tradiesOnline: contacts.filter((c) => c.kind === "tradie" && tradiePresence[c.id]?.online).length,
+      joinRequests: demoJoinRequestRows.length,
+    },
+    pipeline,
+    transactions,
+    monthly: [...monthlyMap.values()],
+    propertiesByPm: [...byPm.values()].sort((a, b) => b.properties - a.properties),
+    joinRequests: [...demoJoinRequestRows].reverse().map((j) => ({
+      persona: j.persona, fullName: j.fullName, email: j.email, suburb: j.suburb,
+      hubspotSynced: false, at: j.createdAt,
+    })),
+  };
+}
+
 // ——— v8 R2 helpers ———
 
 /** The human verification + Penny's settlement — shared by the Job Screen's
