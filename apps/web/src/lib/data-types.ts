@@ -853,11 +853,18 @@ export interface DataSource {
   ): Promise<{ ok: boolean; requestId?: string; error?: string }>;
 
   // Go Online / presence
-  setTradiePresence(tradiePortalToken: string, online: boolean): Promise<{ ok: boolean; online: boolean }>;
+  setTradiePresence(
+    tradiePortalToken: string,
+    online: boolean,
+    geo?: { lat: number; lng: number } | null,
+  ): Promise<{ ok: boolean; online: boolean }>;
   getTradiePresence(tradiePortalToken: string): Promise<{ online: boolean }>;
 
   // The live arc
-  markOnMyWay(tradiePortalToken: string, workOrderId: string): Promise<{ ok: boolean; error?: string }>;
+  markOnMyWay(
+    tradiePortalToken: string,
+    workOrderId: string,
+  ): Promise<{ ok: boolean; etaMinutes?: number | null; error?: string }>;
   addJobEvidence(
     tradiePortalToken: string,
     workOrderId: string,

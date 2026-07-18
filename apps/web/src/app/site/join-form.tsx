@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { AddressAutocomplete, type PickedAddress } from "@/components/pulse/address-autocomplete";
 
 const PERSONAS = [
   { key: "renter", label: "I rent", blurb: "Something's broken at my place" },
@@ -17,6 +18,7 @@ export function JoinForm() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [suburb, setSuburb] = useState("");
+  const [address, setAddress] = useState<PickedAddress | null>(null);
   const [state, setState] = useState<"idle" | "sending" | "done" | string>("idle");
 
   async function submit(e: React.FormEvent) {
@@ -26,7 +28,15 @@ export function JoinForm() {
       const res = await fetch("/api/join", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ persona, fullName, email, phone, suburb }),
+        body: JSON.stringify({
+          persona,
+          fullName,
+          email,
+          phone,
+          suburb: address?.suburb ?? suburb,
+          addressText: address?.formattedAddress ?? null,
+          gnafPid: address?.gnafPid ?? null,
+        }),
       });
       const body = (await res.json()) as { ok: boolean; error?: string };
       setState(body.ok ? "done" : (body.error ?? "Something went wrong — try again."));
@@ -88,11 +98,12 @@ export function JoinForm() {
           onChange={(e) => setPhone(e.target.value)}
           className="rounded-xl border border-field-line bg-field-900 px-4 py-3 text-sm text-white placeholder:text-white/30"
         />
-        <input
-          placeholder="Suburb (helps us light up your area)"
-          value={suburb}
-          onChange={(e) => setSuburb(e.target.value)}
-          className="rounded-xl border border-field-line bg-field-900 px-4 py-3 text-sm text-white placeholder:text-white/30"
+        <AddressAutocomplete
+          placeholder="Property address (start typing — pick the match)"
+          onPick={(picked) => {
+            setAddress(picked);
+            if (picked) setSuburb(picked.suburb);
+          }}
         />
       </div>
       <button

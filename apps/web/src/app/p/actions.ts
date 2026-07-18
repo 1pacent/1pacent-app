@@ -131,8 +131,8 @@ export async function acceptOfferAction(token: string, quoteId: string) {
   return result;
 }
 
-export async function setOnlineAction(token: string, online: boolean) {
-  const result = await (await getData()).setTradiePresence(token, online);
+export async function setOnlineAction(token: string, online: boolean, geo?: { lat: number; lng: number } | null) {
+  const result = await (await getData()).setTradiePresence(token, online, geo ?? null);
   await poke(tradeTopic());
   return result;
 }
@@ -141,11 +141,13 @@ export async function onMyWayAction(token: string, workOrderId: string, requestI
   const result = await (await getData()).markOnMyWay(token, workOrderId);
   if (result.ok) {
     await poke(jobTopic(requestId));
-    // George's on-the-way ping (Maps-computed ETA arrives with geocoding;
-    // the arc on the Job Screen is the live source either way).
+    // George's on-the-way ping — with a real ETA when both sides have
+    // coordinates (tradie presence × verified property geo).
     await pushMoment(requestId, "occupant", {
       title: "On the way 🚐",
-      body: "Your tradie is heading to you now. Track the job live.",
+      body: result.etaMinutes
+        ? `Your tradie is about ${result.etaMinutes} min away. Track the job live.`
+        : "Your tradie is heading to you now. Track the job live.",
       path: `job/${requestId}`,
       tag: `otw-${requestId}`,
     });

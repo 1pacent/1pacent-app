@@ -13,7 +13,16 @@ const PERSONAS = new Set(["renter", "owner", "landlord", "pm", "tradie"]);
 
 
 export async function POST(request: NextRequest) {
-  let body: { persona?: string; fullName?: string; email?: string; phone?: string; suburb?: string; message?: string };
+  let body: {
+    persona?: string;
+    fullName?: string;
+    email?: string;
+    phone?: string;
+    suburb?: string;
+    message?: string;
+    addressText?: string | null;
+    gnafPid?: string | null;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -30,6 +39,8 @@ export async function POST(request: NextRequest) {
   const phone = body.phone ? String(body.phone).trim().slice(0, 30) : null;
   const suburb = body.suburb ? String(body.suburb).trim().slice(0, 80) : null;
   const message = body.message ? String(body.message).trim().slice(0, 500) : null;
+  const addressText = body.addressText ? String(body.addressText).trim().slice(0, 200) : null;
+  const gnafPid = body.gnafPid && /^[A-Za-z0-9_]{6,40}$/.test(String(body.gnafPid)) ? String(body.gnafPid) : null;
 
   // CRM mirror (never blocks the lead landing).
   let hubspotId: string | null = null;
@@ -56,6 +67,8 @@ export async function POST(request: NextRequest) {
       phone,
       suburb,
       message,
+      address_text: addressText,
+      gnaf_pid: gnafPid,
       hubspot_id: hubspotId,
     });
     if (error) {

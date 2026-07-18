@@ -46,7 +46,15 @@ export function TradeHome({ token, name, initial }: { token: string; name: strin
         onClick={() => {
           setError(null);
           startTransition(async () => {
-            const r = await setOnlineAction(token, !online);
+            const geo = await new Promise<{ lat: number; lng: number } | null>((resolve) => {
+              if (!("geolocation" in navigator)) return resolve(null);
+              navigator.geolocation.getCurrentPosition(
+                (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+                () => resolve(null),
+                { maximumAge: 60_000, timeout: 4_000 },
+              );
+            });
+            const r = await setOnlineAction(token, !online, geo);
             if (r.ok) {
               setOnline(r.online);
               router.refresh();

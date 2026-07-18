@@ -39,6 +39,8 @@ import {
   computeTimeAccuracy,
   countsTowardQuoteAccuracy,
   countsTowardTimeAccuracy,
+  etaMinutesFromDistance,
+  haversineKm,
   paymentScheduleFor,
   splitPaymentWithFastPay,
   varianceNeedsApproval,
@@ -136,6 +138,9 @@ export interface DemoProperty {
   pmContactId?: string;
   occupancyStatus?: OccupancyStatus;
   ownerContactId?: string;
+  /** v8 R5a: coordinates (nearest verified address) — George's ETA fuel. */
+  lat?: number;
+  lng?: number;
 }
 
 export interface DemoRequestEventRow {
@@ -169,6 +174,8 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 const properties: DemoProperty[] = [
   {
     id: "prop-fitzroy",
+    lat: -37.795576,
+    lng: 144.975952,
     address: "12 Rose Street",
     suburb: "Fitzroy VIC 3065",
     profile: { jurisdiction: "VIC", hasGas: true, hasPool: false },
@@ -185,6 +192,8 @@ const properties: DemoProperty[] = [
   },
   {
     id: "prop-richmond",
+    lat: -37.825027,
+    lng: 144.990581,
     address: "8/44 Swan Street",
     suburb: "Richmond VIC 3121",
     profile: { jurisdiction: "VIC", hasGas: false, hasPool: false },
@@ -200,6 +209,8 @@ const properties: DemoProperty[] = [
   },
   {
     id: "prop-brunswick",
+    lat: -37.777634,
+    lng: 144.959825,
     address: "3 Sydney Road",
     suburb: "Brunswick VIC 3056",
     profile: { jurisdiction: "VIC", hasGas: true, hasPool: true },
@@ -210,6 +221,8 @@ const properties: DemoProperty[] = [
   },
   {
     id: "prop-fitzroy-north",
+    lat: -37.782937,
+    lng: 144.978792,
     address: "27 Scotchmer Street",
     suburb: "Fitzroy VIC 3065",
     profile: { jurisdiction: "VIC", hasGas: true, hasPool: false },
@@ -490,7 +503,7 @@ const jobEvidence: DemoJobEvidence[] = [];
 let demoEvidenceSeq = 0;
 
 /** The Go Online toggle. John starts online so the demo pings immediately. */
-const tradiePresence: Record<string, { online: boolean }> = {
+const tradiePresence: Record<string, { online: boolean; lat?: number; lng?: number }> = {
   "contact-tradie-john": { online: true },
   "contact-tradie-leo": { online: true },
 };
@@ -2228,10 +2241,10 @@ export const demoData: DataSource = {
     return { ok: true as const, requestId: request.id };
   },
 
-  async setTradiePresence(tradiePortalToken, online) {
+  async setTradiePresence(tradiePortalToken, online, geo) {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, online: false };
-    tradiePresence[resolved.contactId] = { online };
+    tradiePresence[resolved.contactId] = { online, ...(geo ? { lat: geo.lat, lng: geo.lng } : {}) };
     return { ok: true, online };
   },
 
@@ -2249,7 +2262,15 @@ export const demoData: DataSource = {
     const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
     if (!wo) return { ok: false as const, error: "Job not found." };
     wo.onTheWayAt = new Date().toISOString();
-    return { ok: true as const };
+    // George's real ETA (parity with supabase).
+    let etaMinutes: number | null = null;
+    const presence = tradiePresence[resolved.contactId];
+    const request = requests.find((r) => r.id === wo.requestId);
+    const property = request ? properties.find((pp) => pp.id === request.propertyId) : null;
+    if (presence?.lat != null && presence.lng != null && property?.lat != null && property.lng != null) {
+      etaMinutes = etaMinutesFromDistance(haversineKm(presence.lat, presence.lng, property.lat, property.lng));
+    }
+    return { ok: true as const, etaMinutes };
   },
 
   async addJobEvidence(tradiePortalToken, workOrderId, input) {

@@ -36,6 +36,8 @@ import {
   computeTimeAccuracy,
   countsTowardQuoteAccuracy,
   countsTowardTimeAccuracy,
+  etaMinutesFromDistance,
+  haversineKm,
   validateQuoteSubmission,
   validateToken,
   varianceNeedsApproval,
@@ -2780,7 +2782,7 @@ export const supabaseData: DataSource = {
     return { ok: true, requestId: reqRow.id as string };
   },
 
-  async setTradiePresence(tradiePortalToken, online) {
+  async setTradiePresence(tradiePortalToken, online, geo) {
     const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
     if (!resolved?.contact_id) return { ok: false, online: false };
     const db = serviceClient();
@@ -2790,6 +2792,7 @@ export const supabaseData: DataSource = {
       tradie_contact_id: resolved.contact_id,
       org_id: contact.org_id,
       online,
+      ...(geo ? { last_lat: geo.lat, last_lng: geo.lng } : {}),
       updated_at: new Date().toISOString(),
     });
     return { ok: true, online };
@@ -2818,7 +2821,30 @@ export const supabaseData: DataSource = {
       .maybeSingle();
     if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
     await db.from("work_orders").update({ on_the_way_at: new Date().toISOString() }).eq("id", wo.id);
-    return { ok: true };
+    // George's real ETA (v8 R5a): tradie's last position × the property's
+    // verified coordinates. Null when either side lacks geo — the ping goes
+    // out without a number rather than with a made-up one.
+    let etaMinutes: number | null = null;
+    const [{ data: presence }, { data: woReq }] = await Promise.all([
+      db.from("tradie_presence").select("last_lat, last_lng").eq("tradie_contact_id", resolved.contact_id).maybeSingle(),
+      db.from("work_orders").select("request_id").eq("id", wo.id).maybeSingle(),
+    ]);
+    if (presence?.last_lat != null && presence.last_lng != null && woReq) {
+      const { data: reqProp } = await db
+        .from("maintenance_requests")
+        .select("properties(lat, lng)")
+        .eq("id", woReq.request_id)
+        .maybeSingle();
+      const prop = Array.isArray((reqProp as { properties: unknown } | null)?.properties)
+        ? ((reqProp as { properties: Array<{ lat: number | null; lng: number | null }> }).properties[0] ?? null)
+        : ((reqProp as { properties: { lat: number | null; lng: number | null } | null } | null)?.properties ?? null);
+      if (prop?.lat != null && prop.lng != null) {
+        etaMinutes = etaMinutesFromDistance(
+          haversineKm(Number(presence.last_lat), Number(presence.last_lng), Number(prop.lat), Number(prop.lng)),
+        );
+      }
+    }
+    return { ok: true, etaMinutes };
   },
 
   async addJobEvidence(tradiePortalToken, workOrderId, input) {
