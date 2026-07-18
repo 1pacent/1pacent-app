@@ -919,6 +919,23 @@ export interface DataSource {
    * estimated, conflicts flagged (never silently re-booked). */
   getTradieRun(tradiePortalToken: string): Promise<TradieRunView | null>;
 
+  // ——— v8 R5b: crews ———
+
+  /** The business's field crew — each with their own link, presence and
+   * location; the business keeps the rate card, trust score and payouts. */
+  listCrew(tradiePortalToken: string): Promise<Array<{
+    contactId: string;
+    name: string;
+    online: boolean;
+  }> | null>;
+
+  /** Add a staff member (business seat only): creates their contact and
+   * mints their own portal link — the raw link is returned ONCE, share it. */
+  addCrewMember(
+    tradiePortalToken: string,
+    input: { name: string; email?: string; phone?: string },
+  ): Promise<{ ok: boolean; path?: string; error?: string }>;
+
   // ——— v8 R3: Real money & the second orbit ———
 
   /** The variance protocol: an on-site scope change. Inside the playbook's

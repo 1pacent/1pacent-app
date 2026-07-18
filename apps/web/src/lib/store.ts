@@ -312,6 +312,9 @@ interface DemoContact {
   kind: "tenant" | "tradie" | "owner" | "property_manager" | "customer";
   fullName: string;
   email: string;
+  /** v8 R5b: staff belong to a business contact. */
+  employerContactId?: string;
+  phone?: string;
 }
 
 const contacts: DemoContact[] = [
@@ -455,6 +458,8 @@ interface DemoWorkOrder {
   receiptDataUrl?: string | null;
   assetPurchasedAt?: string | null;
   assetWarrantyMonths?: number | null;
+  /** v8 R5b: the crew member on the van (commercials stay with the business). */
+  assignedStaffContactId?: string | null;
 }
 
 /** v8: payments mirror the (simulated) PSP — no custody, ever. */
@@ -1599,7 +1604,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return [];
     const ACTIVE: RequestState[] = ["scheduled", "in_progress", "evidence_pending", "verified"];
     return workOrders
-      .filter((w) => w.tradieContactId === resolved.contactId)
+      .filter((w) => w.tradieContactId === demoBizId(resolved.contactId!))
       .map((w) => {
         const request = requests.find((r) => r.id === w.requestId);
         if (!request) return null;
@@ -1625,7 +1630,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This portal link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request) return { ok: false as const, error: "Request not found." };
@@ -1646,7 +1651,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This portal link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request) return { ok: false as const, error: "Request not found." };
@@ -1697,7 +1702,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This portal link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request) return { ok: false as const, error: "Request not found." };
@@ -2185,7 +2190,7 @@ export const demoData: DataSource = {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return [];
     return quotes
-      .filter((q) => q.tradieContactId === resolved.contactId && q.status === "invited")
+      .filter((q) => q.tradieContactId === demoBizId(resolved.contactId!) && q.status === "invited")
       .map((q) => {
         const request = requests.find((r) => r.id === q.requestId);
         if (!request || requestState(request) !== "quoting" || !request.playbookKey) return null;
@@ -2224,7 +2229,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This link isn't active." };
     }
-    const quote = quotes.find((q) => q.id === quoteId && q.tradieContactId === resolved.contactId);
+    const quote = quotes.find((q) => q.id === quoteId && q.tradieContactId === demoBizId(resolved.contactId!));
     if (!quote || quote.status !== "invited") {
       return { ok: false as const, error: "That job's gone — another tradie got there first." };
     }
@@ -2238,6 +2243,9 @@ export const demoData: DataSource = {
     // Payer pre-authorized at booking; George settles the match deterministically.
     const result = acceptQuoteInternal(request, quote.id, "system", "george:dispatch");
     if (!result.ok) return { ok: false as const, error: result.error };
+    // The human on the van (crew member or the owner themselves).
+    const acceptedWo = workOrders.find((w) => w.requestId === request.id);
+    if (acceptedWo) acceptedWo.assignedStaffContactId = resolved.contactId;
     return { ok: true as const, requestId: request.id };
   },
 
@@ -2259,7 +2267,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     wo.onTheWayAt = new Date().toISOString();
     // George's real ETA (parity with supabase).
@@ -2278,7 +2286,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     jobEvidence.push({
       id: `ev-${++demoEvidenceSeq}`,
@@ -2299,7 +2307,7 @@ export const demoData: DataSource = {
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
       return { ok: false as const, error: "This link isn't active." };
     }
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false as const, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request) return { ok: false as const, error: "Request not found." };
@@ -2376,8 +2384,8 @@ export const demoData: DataSource = {
       viewer = "pm";
     } else if (resolved.scope === "tradie_portal") {
       const mine =
-        workOrders.some((w) => w.requestId === request.id && w.tradieContactId === resolved.contactId) ||
-        quotes.some((q) => q.requestId === request.id && q.tradieContactId === resolved.contactId);
+        workOrders.some((w) => w.requestId === request.id && w.tradieContactId === demoBizId(resolved.contactId!)) ||
+        quotes.some((q) => q.requestId === request.id && q.tradieContactId === demoBizId(resolved.contactId!));
       if (!mine) return null;
       viewer = "tradie";
     } else return null;
@@ -2657,8 +2665,12 @@ export const demoData: DataSource = {
   async getTradieRun(tradiePortalToken: string): Promise<TradieRunView | null> {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
+    const isStaff = demoBizId(resolved.contactId) !== resolved.contactId;
     const mine = workOrders.filter(
-      (w) => w.tradieContactId === resolved.contactId && ["scheduled", "in_progress"].includes(w.status),
+      (w) =>
+        w.tradieContactId === demoBizId(resolved.contactId!) &&
+        ["scheduled", "in_progress"].includes(w.status) &&
+        (!isStaff || !w.assignedStaffContactId || w.assignedStaffContactId === resolved.contactId),
     );
     const jobs: RunJob[] = [];
     const meta = new Map<string, { address: string; state: RequestState; slotLabel: string | null }>();
@@ -2712,7 +2724,7 @@ export const demoData: DataSource = {
   async proposeVariance(tradiePortalToken, workOrderId, input) {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request) return { ok: false, error: "Request not found." };
@@ -2803,7 +2815,7 @@ export const demoData: DataSource = {
   async addJobPart(tradiePortalToken, workOrderId, input) {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request || requestState(request) !== "in_progress") {
@@ -2866,7 +2878,7 @@ export const demoData: DataSource = {
   async setAssetDetails(tradiePortalToken, workOrderId, input) {
     const resolved = resolveDemoToken(tradiePortalToken);
     if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
-    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === demoBizId(resolved.contactId!));
     if (!wo) return { ok: false, error: "Job not found." };
     const request = requests.find((r) => r.id === wo.requestId);
     if (!request || !["in_progress", "evidence_pending"].includes(requestState(request))) {
@@ -2887,6 +2899,39 @@ export const demoData: DataSource = {
     }
     demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "asset_identified", at: new Date().toISOString(), note: `${manufacturer} ${model} ${serial}`.trim() });
     return { ok: true };
+  },
+
+  // ——— v8 R5b: crews ———
+
+  async listCrew(tradiePortalToken) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return null;
+    if (demoBizId(resolved.contactId) !== resolved.contactId) return []; // staff don't manage the crew
+    return contacts
+      .filter((c) => c.employerContactId === resolved.contactId)
+      .map((c) => ({ contactId: c.id, name: c.fullName, online: Boolean(tradiePresence[c.id]?.online) }));
+  },
+
+  async addCrewMember(tradiePortalToken, input) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    if (demoBizId(resolved.contactId) !== resolved.contactId) {
+      return { ok: false, error: "Only the business seat manages the crew." };
+    }
+    const name = input.name.trim().slice(0, 80);
+    if (name.length < 2) return { ok: false, error: "A name, please." };
+    const staff: DemoContact = {
+      id: `contact-staff-${++demoContactSeq}`,
+      kind: "tradie",
+      fullName: name,
+      email: input.email?.trim() || "",
+      phone: input.phone?.trim() || undefined,
+      employerContactId: resolved.contactId,
+    };
+    contacts.push(staff);
+    tradiePresence[staff.id] = { online: false };
+    const token = issueDemoToken("tradie_portal", staff.id, staff.id);
+    return { ok: true, path: `/p/trade/${token}` };
   },
 
   async attachAssetReceipt(ownerToken, assetId, input) {
@@ -3114,10 +3159,16 @@ function demoVerifySettle(
 
 // ——— v8 R1 helpers ———
 
+/** Crews (v8 R5b): a staff member acts FOR their employer. */
+function demoBizId(contactId: string): string {
+  return contacts.find((c) => c.id === contactId)?.employerContactId ?? contactId;
+}
+
 function onlineTradieIds(): string[] {
-  return contacts
+  const ids = contacts
     .filter((c) => c.kind === "tradie" && tradiePresence[c.id]?.online)
-    .map((c) => c.id);
+    .map((c) => demoBizId(c.id));
+  return [...new Set(ids)];
 }
 
 function bookablePropertyId(token: string, propertyId?: string): string | null {
@@ -3143,7 +3194,12 @@ function demoJobSource(request: DemoRequest): JobSource {
   const wo = workOrders.find((w) => w.requestId === request.id);
   const acceptedQuote = quotes.find((q) => q.requestId === request.id && q.status === "accepted");
   const tradieId = wo?.tradieContactId ?? acceptedQuote?.tradieContactId ?? null;
-  const tradie = tradieId ? contacts.find((c) => c.id === tradieId) : null;
+  const tradieBiz = tradieId ? contacts.find((c) => c.id === tradieId) : null;
+  const staff = wo?.assignedStaffContactId ? contacts.find((c) => c.id === wo.assignedStaffContactId) : null;
+  const tradie =
+    staff && tradieBiz && staff.id !== tradieBiz.id
+      ? { ...staff, fullName: `${staff.fullName} (${tradieBiz.fullName})` }
+      : tradieBiz;
   const owner = property?.ownerContactId ? contacts.find((c) => c.id === property.ownerContactId) : null;
   const pm = property?.pmContactId ? contacts.find((c) => c.id === property.pmContactId) : null;
   const occupant = contacts.find((c) => c.kind === "tenant");

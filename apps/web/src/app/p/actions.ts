@@ -222,6 +222,10 @@ export async function setAutopilotAction(token: string, input: AutopilotInput) {
   return (await getData()).setAutopilot(token, input);
 }
 
+export async function addCrewMemberAction(token: string, input: { name: string; email?: string; phone?: string }) {
+  return (await getData()).addCrewMember(token, input);
+}
+
 export async function getTradieRunAction(token: string): Promise<TradieRunView | null> {
   return (await getData()).getTradieRun(token);
 }

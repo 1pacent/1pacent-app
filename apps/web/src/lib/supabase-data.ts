@@ -1546,12 +1546,13 @@ export const supabaseData: DataSource = {
     const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
     if (!resolved?.contact_id) return [];
     const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
     const { data, error } = await db
       .from("work_orders")
       .select(
         "id, request_id, quote_cents, call_out_fee_cents, maintenance_requests!work_orders_request_id_fkey!inner(id, title, category, status, property_id, properties(address_line1, suburb, state, postcode))",
       )
-      .eq("tradie_contact_id", resolved.contact_id)
+      .eq("tradie_contact_id", bizId)
       .in("maintenance_requests.status", ["scheduled", "in_progress", "evidence_pending", "verified"])
       .order("created_at", { ascending: true });
     if (error) throw new Error(`listTradieJobs: ${error.message}`);
@@ -1599,7 +1600,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     const { data: req } = await db
       .from("maintenance_requests")
       .select("id, org_id, status")
@@ -1647,7 +1648,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     const { data: req } = await db
       .from("maintenance_requests")
       .select("id, org_id, status")
@@ -1704,7 +1705,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     const { data: req } = await db
       .from("maintenance_requests")
       .select("id, org_id, property_id, status, compliance_requirement_key")
@@ -2677,12 +2678,13 @@ export const supabaseData: DataSource = {
     const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
     if (!resolved?.contact_id) return [];
     const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
     const { data } = await db
       .from("quotes")
       .select(
         "id, quote_cents, maintenance_requests!quotes_request_id_fkey!inner(id, title, category, status, playbook_key, booked_start_at, booked_end_at, property_id, properties(address_line1, suburb, state, postcode))",
       )
-      .eq("tradie_contact_id", resolved.contact_id)
+      .eq("tradie_contact_id", bizId)
       .eq("status", "invited")
       .eq("maintenance_requests.status", "quoting");
     const rows = (data ?? []) as unknown as Array<{
@@ -2742,12 +2744,13 @@ export const supabaseData: DataSource = {
     const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
     if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
     const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
     const { data: quote } = await db
       .from("quotes")
       .select("id, org_id, request_id, status, tradie_contact_id")
       .eq("id", quoteId)
       .maybeSingle();
-    if (!quote || quote.tradie_contact_id !== resolved.contact_id || quote.status !== "invited") {
+    if (!quote || quote.tradie_contact_id !== bizId || quote.status !== "invited") {
       return { ok: false, error: "That job's gone — another tradie got there first." };
     }
     const { data: reqRow } = await db
@@ -2779,6 +2782,11 @@ export const supabaseData: DataSource = {
     // Payer pre-authorized at booking; George settles the match deterministically.
     const result = await acceptQuoteTx(db, reqRow, quote.id, "system", "george:dispatch");
     if (!result.ok) return { ok: false, error: result.error };
+    // The human on the van (crew member or the owner themselves).
+    await db
+      .from("work_orders")
+      .update({ assigned_staff_contact_id: resolved.contact_id })
+      .eq("request_id", reqRow.id);
     return { ok: true, requestId: reqRow.id as string };
   },
 
@@ -2819,7 +2827,7 @@ export const supabaseData: DataSource = {
       .select("id, tradie_contact_id")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     await db.from("work_orders").update({ on_the_way_at: new Date().toISOString() }).eq("id", wo.id);
     // George's real ETA (v8 R5a): tradie's last position × the property's
     // verified coordinates. Null when either side lacks geo — the ping goes
@@ -2856,7 +2864,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     await db.from("job_evidence").insert({
       org_id: wo.org_id,
       work_order_id: wo.id,
@@ -2883,7 +2891,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id, on_site_started_at, estimated_minutes")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     const { data: req } = await db
       .from("maintenance_requests")
       .select("id, org_id, status, playbook_key")
@@ -2996,11 +3004,12 @@ export const supabaseData: DataSource = {
       if (prop?.pm_contact_id !== row.contact_id) return null;
       viewer = "pm";
     } else {
+      const bizId = row.contact_id ? await tradieBusinessId(db, row.contact_id) : null;
       const { data: mine } = await db
         .from("quotes")
         .select("id")
         .eq("request_id", req.id)
-        .eq("tradie_contact_id", row.contact_id)
+        .eq("tradie_contact_id", bizId ?? "")
         .limit(1);
       if (!mine || mine.length === 0) return null;
       viewer = "tradie";
@@ -3016,7 +3025,7 @@ export const supabaseData: DataSource = {
       db
         .from("work_orders")
         .select(
-          "id, tradie_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, estimated_minutes, actual_minutes, contacts(full_name)",
+          "id, tradie_contact_id, assigned_staff_contact_id, on_the_way_at, scheduled_start_at, scheduled_end_at, completion_note, estimated_minutes, actual_minutes, contacts(full_name)",
         )
         .eq("request_id", req.id)
         .maybeSingle(),
@@ -3044,6 +3053,14 @@ export const supabaseData: DataSource = {
       contacts: ContactJoin | ContactJoin[] | null;
     } | null;
     let tradieName = normalizeContact(woRow?.contacts ?? null)?.full_name ?? null;
+    // Crews: the face on the job is the ASSIGNED STAFF member, with the
+    // business behind them.
+    const staffId = (wo as { assigned_staff_contact_id?: string | null } | null)?.assigned_staff_contact_id;
+    if (staffId && staffId !== woRow?.id) {
+      const staffName = await contactName(db, staffId);
+      if (staffName && tradieName && staffName !== tradieName) tradieName = `${staffName} (${tradieName})`;
+      else if (staffName) tradieName = staffName;
+    }
     if (!tradieName) {
       const { data: acceptedQuote } = await db
         .from("quotes")
@@ -3492,19 +3509,22 @@ export const supabaseData: DataSource = {
     const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
     if (!resolved?.contact_id) return null;
     const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
     const { data: wos } = await db
       .from("work_orders")
       .select(
-        "id, request_id, status, scheduled_start_at, scheduled_end_at, maintenance_requests!work_orders_request_id_fkey!inner(id, title, status, playbook_key, booked_start_at, booked_end_at, properties(address_line1, suburb))",
+        "id, request_id, status, scheduled_start_at, scheduled_end_at, assigned_staff_contact_id, maintenance_requests!work_orders_request_id_fkey!inner(id, title, status, playbook_key, booked_start_at, booked_end_at, properties(address_line1, suburb))",
       )
-      .eq("tradie_contact_id", resolved.contact_id)
+      .eq("tradie_contact_id", bizId)
       .in("status", ["scheduled", "in_progress"]);
+    const isStaff = bizId !== resolved.contact_id;
     const jobs: RunJob[] = [];
     const meta = new Map<string, { address: string; state: RequestState; slotLabel: string | null }>();
     for (const wo of (wos ?? []) as unknown as Array<{
       id: string;
       request_id: string;
       status: string;
+      assigned_staff_contact_id?: string | null;
       scheduled_start_at: string | null;
       scheduled_end_at: string | null;
       maintenance_requests: {
@@ -3517,6 +3537,8 @@ export const supabaseData: DataSource = {
         properties: { address_line1: string; suburb: string } | { address_line1: string; suburb: string }[] | null;
       };
     }>) {
+      // A staff member's run is THEIR jobs (assigned to them, or unassigned).
+      if (isStaff && wo.assigned_staff_contact_id && wo.assigned_staff_contact_id !== resolved.contact_id) continue;
       const req = wo.maintenance_requests;
       const prop = Array.isArray(req.properties) ? req.properties[0] : req.properties;
       const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
@@ -3572,7 +3594,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id, quote_cents, call_out_fee_cents, status")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     if ((wo.status as RequestState) !== "in_progress") {
       return { ok: false, error: "Scope changes are raised on site, while the job is in progress." };
     }
@@ -3707,7 +3729,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, request_id, tradie_contact_id, status, quote_cents, call_out_fee_cents")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     if ((wo.status as RequestState) !== "in_progress") {
       return { ok: false, error: "Parts are booked on site, while the job is in progress." };
     }
@@ -3801,7 +3823,7 @@ export const supabaseData: DataSource = {
       .select("id, org_id, tradie_contact_id, status")
       .eq("id", workOrderId)
       .maybeSingle();
-    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!wo || wo.tradie_contact_id !== (await tradieBusinessId(db, resolved.contact_id))) return { ok: false, error: "Job not found." };
     if (!["in_progress", "evidence_pending"].includes(wo.status as string)) {
       return { ok: false, error: "Asset details are recorded on site." };
     }
@@ -3835,6 +3857,78 @@ export const supabaseData: DataSource = {
       payload: { manufacturer, model, serial, receiptAttached: Boolean(receipt) },
     });
     return { ok: true };
+  },
+
+  // ——— v8 R5b: crews ———
+
+  async listCrew(tradiePortalToken) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
+    if (bizId !== resolved.contact_id) return []; // staff don't manage the crew
+    const { data: staff } = await db
+      .from("contacts")
+      .select("id, full_name")
+      .eq("employer_contact_id", bizId);
+    const staffRows = (staff ?? []) as Array<{ id: string; full_name: string }>;
+    if (staffRows.length === 0) return [];
+    const { data: presence } = await db
+      .from("tradie_presence")
+      .select("tradie_contact_id, online")
+      .in("tradie_contact_id", staffRows.map((c) => c.id));
+    const onlineSet = new Set(
+      ((presence ?? []) as Array<{ tradie_contact_id: string; online: boolean }>)
+        .filter((pr) => pr.online)
+        .map((pr) => pr.tradie_contact_id),
+    );
+    return staffRows.map((c) => ({ contactId: c.id, name: c.full_name, online: onlineSet.has(c.id) }));
+  },
+
+  async addCrewMember(tradiePortalToken, input) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
+    if (bizId !== resolved.contact_id) return { ok: false, error: "Only the business seat manages the crew." };
+    const name = input.name.trim().slice(0, 80);
+    if (name.length < 2) return { ok: false, error: "A name, please." };
+    const { data: biz } = await db.from("contacts").select("org_id").eq("id", bizId).maybeSingle();
+    if (!biz) return { ok: false, error: "Business not found." };
+    const { data: staff, error } = await db
+      .from("contacts")
+      .insert({
+        org_id: biz.org_id,
+        kind: "tradie",
+        full_name: name,
+        email: input.email?.trim() || null,
+        phone: input.phone?.trim() || null,
+        employer_contact_id: bizId,
+      })
+      .select("id")
+      .single();
+    if (error || !staff) return { ok: false, error: error?.message ?? "Could not add them." };
+    await db.from("tradie_presence").upsert({ tradie_contact_id: staff.id, org_id: biz.org_id, online: false });
+    const issued = issueToken("tradie_portal");
+    const { error: tError } = await db.from("access_tokens").insert({
+      org_id: biz.org_id,
+      token_hash: issued.tokenHash,
+      scope: "tradie_portal",
+      aggregate_id: staff.id,
+      contact_id: staff.id,
+      expires_at: issued.expiresAt.toISOString(),
+    });
+    if (tError) return { ok: false, error: tError.message };
+    await db.from("events").insert({
+      org_id: biz.org_id,
+      aggregate_type: "contact",
+      aggregate_id: bizId,
+      event_type: "crew_member_added",
+      actor_type: "tradie",
+      actor_id: `token:${resolved.id}`,
+      payload: { staffContactId: staff.id, name },
+    });
+    return { ok: true, path: `/p/trade/${issued.token}` };
   },
 
   async attachAssetReceipt(ownerToken, assetId, input) {
@@ -4672,9 +4766,28 @@ async function resolveTokenAny(rawToken: string, allowed: TokenScope[]): Promise
 
 // ——— v8 R1 helpers ———
 
+/** Crews (v8 R5b): a staff member acts FOR their employer. The business id
+ * is the commercial identity (offers, work orders, money, trust); the
+ * person's own id keeps presence/geolocation and attribution. */
+async function tradieBusinessId(db: ReturnType<typeof serviceClient>, contactId: string): Promise<string> {
+  const { data } = await db.from("contacts").select("employer_contact_id").eq("id", contactId).maybeSingle();
+  return ((data as { employer_contact_id?: string | null } | null)?.employer_contact_id ?? contactId) as string;
+}
+
+/** Businesses with anyone online — the owner OR any of their crew. */
 async function onlineTradieIds(db: ReturnType<typeof serviceClient>): Promise<string[]> {
-  const { data } = await db.from("tradie_presence").select("tradie_contact_id").eq("online", true);
-  return ((data ?? []) as Array<{ tradie_contact_id: string }>).map((r) => r.tradie_contact_id);
+  const { data } = await db
+    .from("tradie_presence")
+    .select("tradie_contact_id, contacts!tradie_presence_tradie_contact_id_fkey(employer_contact_id)")
+    .eq("online", true);
+  const ids = ((data ?? []) as Array<{
+    tradie_contact_id: string;
+    contacts: { employer_contact_id: string | null } | { employer_contact_id: string | null }[] | null;
+  }>).map((r) => {
+    const c = Array.isArray(r.contacts) ? r.contacts[0] : r.contacts;
+    return c?.employer_contact_id ?? r.tradie_contact_id;
+  });
+  return [...new Set(ids)];
 }
 
 async function bookablePropertyId(

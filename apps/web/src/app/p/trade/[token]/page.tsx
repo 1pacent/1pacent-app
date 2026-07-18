@@ -4,6 +4,7 @@ import { EnablePush } from "@/components/pulse/enable-push";
 import { TradeHome } from "./trade-home";
 import { RunView } from "./run-view";
 import { FastPayCard } from "./fastpay-card";
+import { CrewCard } from "./crew-card";
 
 export const dynamic = "force-dynamic";
 
@@ -23,13 +24,14 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
     );
   }
 
-  const [presence, offers, jobs, accuracy, run, fastPay] = await Promise.all([
+  const [presence, offers, jobs, accuracy, run, fastPay, crew] = await Promise.all([
     data.getTradiePresence(token),
     data.getOpenOffers(token),
     data.listTradieJobs(token),
     data.getTradieAccuracy(token),
     data.getTradieRun(token),
     data.getFastPay(token),
+    data.listCrew(token),
   ]);
 
   return (
@@ -54,6 +56,7 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
       />
       <div className="mt-4 flex flex-col gap-4">
         {run && <RunView run={run} />}
+        {crew !== null && <CrewCard token={token} initial={crew} />}
         <FastPayCard token={token} initialEnabled={fastPay?.enabled ?? false} />
         <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />
       </div>
