@@ -86,6 +86,16 @@ Record each measure as **PASS / FAIL** plus a note. Any FAIL: screenshot + the t
 - [ ] Completion is impossible with missing evidence (button disabled with reason).
 - [ ] After done: the job screen shows ⏱ actual vs estimated minutes.
 
+### UC5b — Fairness & evidence (add-on, 3 min)
+
+1. When proposing the big variance in UC5, attach the photo ("what you found").
+2. Owner: confirm the photo appears on the decision card before approving.
+3. After the run, open the tradie's accuracy card: confirm this fixed-band job did NOT change the ±quote-accuracy figure, and (because the variance was approved) did not feed time accuracy either.
+
+**Measures**
+- [ ] Payer sees the tradie's photo evidence with the variance decision.
+- [ ] A network-priced blowout leaves the tradie's accuracy untouched (fault attribution works both ways).
+
 ## UC6 — Verify → money moves → the record
 
 1. Owner: **Verify** (lock-screen push one-tap, or the job screen button).
@@ -97,6 +107,17 @@ Record each measure as **PASS / FAIL** plus a note. Any FAIL: screenshot + the t
 - [ ] Owner total equals booked amount + approved parts exactly.
 - [ ] Record gained the job, the asset, and the warranty; Data Pack opens with sections populated.
 - [ ] Tradie accuracy card now shows a time-accuracy percentage.
+
+### UC6b — Warranty identity (add-on, 3 min)
+
+1. During UC5, as the tradie tap **Record the asset** and enter Manufacturer/Model/Serial (e.g. from any appliance nearby).
+2. After verifying (UC6), open the Record: the asset shows make · model · s/n.
+3. As the owner, tap **+ add receipt** on that asset: attach any photo/PDF, set a purchase date and e.g. 60 months.
+
+**Measures**
+- [ ] Asset identity lands on the Record automatically at settle.
+- [ ] The Record shows "manufacturer warranty until <date> · receipt on file ✓" — separate from the tradie's workmanship warranty.
+- [ ] The renter link cannot attach receipts (scope check).
 
 ## UC7 — PM's Deck
 

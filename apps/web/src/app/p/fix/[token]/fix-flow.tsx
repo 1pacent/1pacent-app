@@ -259,8 +259,13 @@ export function FixFlow({
                   </span>
                 </p>
                 <p className="mt-1 text-xs text-white/50">
-                  From real jobs like yours nearby. Your card is authorized now, charged only when you say
-                  it&apos;s done.{p.warrantyMonths > 0 ? ` ${p.warrantyMonths}-month warranty included.` : ""}
+                  {p.evidenceCount >= 3
+                    ? `Priced from ${p.evidenceCount} completed jobs like yours nearby.`
+                    : p.evidenceCount >= 1
+                      ? `Priced from ${p.evidenceCount} completed job${p.evidenceCount === 1 ? "" : "s"} like yours — the band tightens as the network grows.`
+                      : "Introductory network rate — the network is young here; every completed job sharpens this price."}{" "}
+                  Your card is authorized now, charged only when you say it&apos;s done.
+                  {p.warrantyMonths > 0 ? ` ${p.warrantyMonths}-month warranty included.` : ""}
                 </p>
               </>
             ) : (

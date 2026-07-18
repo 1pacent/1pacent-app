@@ -13,6 +13,7 @@ import {
   getJobAction,
   onMyWayAction,
   proposeVarianceAction,
+  setAssetDetailsAction,
   startJobPulseAction,
   verifySettleAction,
 } from "../../../actions";
@@ -43,6 +44,13 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   const [partOpen, setPartOpen] = useState(false);
   const [partLabel, setPartLabel] = useState("");
   const [partCost, setPartCost] = useState("");
+  const [variancePhoto, setVariancePhoto] = useState<string | null>(null);
+  const [assetOpen, setAssetOpen] = useState(false);
+  const [assetMake, setAssetMake] = useState("");
+  const [assetModel, setAssetModel] = useState("");
+  const [assetSerial, setAssetSerial] = useState("");
+  const [assetSaved, setAssetSaved] = useState(false);
+  const varPhotoRef = useRef<HTMLInputElement | null>(null);
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -193,6 +201,14 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
           <p className="mt-1 text-xs text-white/50">
             {job.variance.reason} — {dollars(job.variance.bookedCents)} booked → {dollars(job.variance.newTotalCents)} proposed.
           </p>
+          {job.variance.photoDataUrl && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={job.variance.photoDataUrl}
+              alt="What the tradie found"
+              className="mt-2 max-h-44 w-full rounded-xl border border-field-line object-cover"
+            />
+          )}
           {job.actions.includes("decide_variance") ? (
             <div className="mt-3 flex gap-2">
               <button
@@ -354,6 +370,49 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                 </p>
               </div>
             )}
+            {job.actions.includes("add_part") && !assetOpen && !assetSaved && (
+              <GhostButton disabled={pending} onClick={() => setAssetOpen(true)}>
+                🏷 Record the asset (make · model · serial)
+              </GhostButton>
+            )}
+            {assetSaved && (
+              <p className="text-center text-xs text-mint-300">Asset identity recorded ✓ — lands on the property record at settle.</p>
+            )}
+            {job.actions.includes("add_part") && assetOpen && (
+              <div className="rounded-2xl border border-field-line bg-field-900 p-4">
+                <p className="text-sm font-bold text-white">From the id plate</p>
+                <input type="text" placeholder="Manufacturer (e.g. Daikin)" value={assetMake} onChange={(e) => setAssetMake(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30" />
+                <input type="text" placeholder="Model" value={assetModel} onChange={(e) => setAssetModel(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30" />
+                <input type="text" placeholder="Serial number" value={assetSerial} onChange={(e) => setAssetSerial(e.target.value)}
+                  className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30" />
+                <div className="mt-3 flex gap-2">
+                  <HiVisButton
+                    disabled={pending || (!assetMake.trim() && !assetModel.trim() && !assetSerial.trim())}
+                    onClick={() =>
+                      act(async () => {
+                        const r = await setAssetDetailsAction(token, wo, job.requestId, {
+                          manufacturer: assetMake,
+                          model: assetModel,
+                          serial: assetSerial,
+                        });
+                        if (r.ok) {
+                          setAssetOpen(false);
+                          setAssetSaved(true);
+                        }
+                        return r;
+                      })
+                    }
+                  >
+                    Save to the record
+                  </HiVisButton>
+                  <GhostButton disabled={pending} onClick={() => setAssetOpen(false)}>
+                    Cancel
+                  </GhostButton>
+                </div>
+              </div>
+            )}
             {job.actions.includes("propose_variance") && !varianceOpen && (
               <GhostButton disabled={pending} onClick={() => setVarianceOpen(true)}>
                 Price changed on site?
@@ -378,6 +437,25 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                   onChange={(e) => setVarianceReason(e.target.value)}
                   className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
                 />
+                <input
+                  ref={varPhotoRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  hidden
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (file) setVariancePhoto(await compressPhoto(file));
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => varPhotoRef.current?.click()}
+                  className="mt-2 w-full rounded-xl border border-field-line px-3 py-2.5 text-sm font-semibold text-white/70 active:scale-[0.97]"
+                >
+                  {variancePhoto ? "📷 Photo attached ✓ (tap to retake)" : "📷 Photo of what you found (protects you)"}
+                </button>
                 <div className="mt-3 flex gap-2">
                   <HiVisButton
                     disabled={pending || !varianceTotal || !varianceReason.trim()}
@@ -387,11 +465,13 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                         const r = await proposeVarianceAction(token, wo, job.requestId, {
                           newTotalCents: cents,
                           reason: varianceReason.trim(),
+                          photoDataUrl: variancePhoto,
                         });
                         if (r.ok) {
                           setVarianceOpen(false);
                           setVarianceTotal("");
                           setVarianceReason("");
+                          setVariancePhoto(null);
                         }
                         return r;
                       });
@@ -404,7 +484,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
                   </GhostButton>
                 </div>
                 <p className="mt-2 text-[10px] text-white/40">
-                  Small changes inside the playbook&apos;s threshold apply instantly; bigger ones pause the job for a one-tap payer decision.
+                  Small changes inside the playbook&apos;s threshold apply instantly; bigger ones pause the job for a
+                  one-tap payer decision. Approved scope changes never count against your accuracy score — the photo is
+                  your proof it wasn&apos;t your call.
                 </p>
               </div>
             )}

@@ -34,6 +34,8 @@ import {
   unsatisfiedGates,
   blendedAccuracyPct,
   computeTimeAccuracy,
+  countsTowardQuoteAccuracy,
+  countsTowardTimeAccuracy,
   validateQuoteSubmission,
   validateToken,
   varianceNeedsApproval,
@@ -1036,20 +1038,40 @@ export const supabaseData: DataSource = {
   async getTradieTrustSummaries(tradieContactIds: string[]) {
     if (tradieContactIds.length === 0) return {};
     const db = serviceClient();
+    // Computed directly (not the tradie_trust_scores view) so the fairness
+    // rule holds: only jobs the TRADIE priced count toward quote accuracy —
+    // network-priced fixed-band jobs are excluded.
     const { data, error } = await db
-      .from("tradie_trust_scores")
-      .select("tradie_contact_id, completed_jobs, avg_abs_variance_pct")
-      .in("tradie_contact_id", tradieContactIds);
+      .from("work_orders")
+      .select("tradie_contact_id, quote_cents, invoice_cents, maintenance_requests!work_orders_request_id_fkey(playbook_key, category)")
+      .in("tradie_contact_id", tradieContactIds)
+      .not("invoice_cents", "is", null);
     if (error) throw new Error(`getTradieTrustSummaries: ${error.message}`);
-    const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
+    const agg: Record<string, { completed: number; sum: number; n: number }> = {};
     for (const row of (data ?? []) as Array<{
       tradie_contact_id: string;
-      completed_jobs: number;
-      avg_abs_variance_pct: number | null;
+      quote_cents: number | null;
+      invoice_cents: number;
+      maintenance_requests:
+        | { playbook_key: string | null; category: string }
+        | { playbook_key: string | null; category: string }[]
+        | null;
     }>) {
-      summaries[row.tradie_contact_id] = {
-        completedJobs: row.completed_jobs,
-        avgAbsVariancePct: row.avg_abs_variance_pct,
+      const a = (agg[row.tradie_contact_id] ??= { completed: 0, sum: 0, n: 0 });
+      a.completed += 1;
+      if (row.quote_cents === null || Number(row.quote_cents) <= 0) continue;
+      const req = Array.isArray(row.maintenance_requests) ? row.maintenance_requests[0] : row.maintenance_requests;
+      const pb = req?.playbook_key ? getPlaybook(req.playbook_key) : null;
+      if (!countsTowardQuoteAccuracy(pb?.pricing.model ?? "quote_race")) continue; // no playbook = tradie priced
+      a.sum += Math.abs(Number(row.invoice_cents) - Number(row.quote_cents)) / Number(row.quote_cents);
+      a.n += 1;
+    }
+    const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
+    for (const id of tradieContactIds) {
+      const a = agg[id];
+      summaries[id] = {
+        completedJobs: a?.completed ?? 0,
+        avgAbsVariancePct: a && a.n > 0 ? (a.sum / a.n) * 100 : null,
       };
     }
     // v8 R3.5: blend the time signal in, so ranking and Autopilot's trust
@@ -2403,17 +2425,29 @@ export const supabaseData: DataSource = {
     const db = serviceClient();
     const { data: completed } = await db
       .from("work_orders")
-      .select("quote_cents, invoice_cents, maintenance_requests!work_orders_request_id_fkey(title)")
+      .select("id, quote_cents, invoice_cents, maintenance_requests!work_orders_request_id_fkey(title, playbook_key, category)")
       .eq("tradie_contact_id", resolved.contact_id)
       .not("invoice_cents", "is", null)
       .not("quote_cents", "is", null)
       .gt("quote_cents", 0)
       .order("created_at", { ascending: true });
-    const rows = (completed ?? []) as Array<{
+    const allRows = (completed ?? []) as Array<{
+      id: string;
       quote_cents: number;
       invoice_cents: number;
-      maintenance_requests: { title: string } | { title: string }[] | null;
+      maintenance_requests:
+        | { title: string; playbook_key: string | null; category: string }
+        | { title: string; playbook_key: string | null; category: string }[]
+        | null;
     }>;
+    // FAIRNESS (core rule): network-priced (fixed-band) jobs never count
+    // toward the tradie's quote accuracy — the tradie didn't set that price.
+    const pricingOf = (r: (typeof allRows)[number]) => {
+      const req = Array.isArray(r.maintenance_requests) ? r.maintenance_requests[0] : r.maintenance_requests;
+      const pb = req?.playbook_key ? getPlaybook(req.playbook_key) : null;
+      return pb?.pricing.model ?? "quote_race"; // no playbook = the tradie priced it
+    };
+    const rows = allRows.filter((r) => countsTowardQuoteAccuracy(pricingOf(r)));
     const recentJobs = rows.slice(-5).map((w) => {
       const req = Array.isArray(w.maintenance_requests) ? w.maintenance_requests[0] : w.maintenance_requests;
       return {
@@ -2427,20 +2461,31 @@ export const supabaseData: DataSource = {
     const avgAbsVariancePct =
       variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
     // The learning loop's other half: estimated-vs-actual on-site time.
+    // FAIRNESS: an approved/auto-applied scope change voids the estimate —
+    // the job the tradie ran is not the job that was estimated.
     const { data: timedRows } = await db
       .from("work_orders")
-      .select("estimated_minutes, actual_minutes")
+      .select("id, estimated_minutes, actual_minutes")
       .eq("tradie_contact_id", resolved.contact_id)
       .not("actual_minutes", "is", null)
       .not("estimated_minutes", "is", null)
       .gt("estimated_minutes", 0);
-    const timeVariances = ((timedRows ?? []) as Array<{ estimated_minutes: number; actual_minutes: number }>).map(
-      (w) => computeTimeAccuracy(Number(w.estimated_minutes), Number(w.actual_minutes)).absVariancePct,
-    );
+    const timedAll = (timedRows ?? []) as Array<{ id: string; estimated_minutes: number; actual_minutes: number }>;
+    const { data: variedRows } = timedAll.length
+      ? await db
+          .from("variances")
+          .select("work_order_id")
+          .in("work_order_id", timedAll.map((w) => w.id))
+          .in("status", ["approved", "auto_applied"])
+      : { data: [] };
+    const scopeChanged = new Set(((variedRows ?? []) as Array<{ work_order_id: string }>).map((v) => v.work_order_id));
+    const timeVariances = timedAll
+      .filter((w) => countsTowardTimeAccuracy(scopeChanged.has(w.id) ? "approved" : "none"))
+      .map((w) => computeTimeAccuracy(Number(w.estimated_minutes), Number(w.actual_minutes)).absVariancePct);
     const avgAbsTimeVariancePct =
       timeVariances.length > 0 ? timeVariances.reduce((a, b) => a + b, 0) / timeVariances.length : null;
     return {
-      completedJobs: rows.length,
+      completedJobs: allRows.length,
       avgAbsVariancePct,
       avgAbsTimeVariancePct,
       trustScore: scoreTrust({
@@ -2468,6 +2513,8 @@ export const supabaseData: DataSource = {
     let bandLow: number | null = null;
     let bandHigh: number | null = null;
     let bookAmount: number | null = null;
+    let evidenceCount = 0;
+    let confidence: "low" | "medium" | "high" = "low";
     if (playbook.pricing.model === "fixed_band") {
       const comparables = await supabaseData
         .getComparableJobs(propertyId, playbook.category)
@@ -2479,6 +2526,8 @@ export const supabaseData: DataSource = {
       bandLow = band.lowCents;
       bandHigh = band.highCents;
       bookAmount = bookableAmountFromBand(band.lowCents, band.highCents);
+      evidenceCount = band.evidenceCount;
+      confidence = band.confidence;
     }
 
     const onlineIds = await onlineTradieIds(db);
@@ -2508,6 +2557,8 @@ export const supabaseData: DataSource = {
       evidenceGates: [...playbook.evidenceGates],
       warrantyMonths: playbook.warrantyDefaultMonths,
       urgent,
+      evidenceCount,
+      confidence,
       slots: slots.map((s) => ({ startAt: s.startAt.toISOString(), endAt: s.endAt.toISOString(), label: formatSlot(s) })),
       tradiesOnline: onlineIds.length,
       propertyId,
@@ -2946,7 +2997,7 @@ export const supabaseData: DataSource = {
       db.from("payments").select("status, amount_cents").eq("request_id", req.id),
       db
         .from("variances")
-        .select("id, booked_cents, new_total_cents, reason, status")
+        .select("id, booked_cents, new_total_cents, reason, status, photo_data_url")
         .eq("request_id", req.id)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -3060,6 +3111,7 @@ export const supabaseData: DataSource = {
             newTotalCents: Number(varianceRow.new_total_cents),
             reason: varianceRow.reason,
             status: varianceRow.status as VarianceView["status"],
+            photoDataUrl: (varianceRow as { photo_data_url?: string | null }).photo_data_url ?? null,
           }
         : null,
       parts,
@@ -3535,6 +3587,7 @@ export const supabaseData: DataSource = {
         booked_cents: bookedCents,
         new_total_cents: input.newTotalCents,
         reason: input.reason.trim(),
+        photo_data_url: input.photoDataUrl ?? null,
         status,
         decided_at: needsApproval ? null : new Date().toISOString(),
       })
@@ -3709,6 +3762,83 @@ export const supabaseData: DataSource = {
       payload: { label, costCents: input.costCents, varianceId: variance.id },
     });
     return { ok: true, needsApproval: true, varianceId: variance.id as string };
+  },
+
+  // ——— v8 R4b: warranty identity ———
+
+  async setAssetDetails(tradiePortalToken, workOrderId, input) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, org_id, tradie_contact_id, status")
+      .eq("id", workOrderId)
+      .maybeSingle();
+    if (!wo || wo.tradie_contact_id !== resolved.contact_id) return { ok: false, error: "Job not found." };
+    if (!["in_progress", "evidence_pending"].includes(wo.status as string)) {
+      return { ok: false, error: "Asset details are recorded on site." };
+    }
+    const manufacturer = input.manufacturer.trim().slice(0, 80);
+    const model = input.model.trim().slice(0, 80);
+    const serial = input.serial.trim().slice(0, 80);
+    if (!manufacturer && !model && !serial) return { ok: false, error: "Nothing to record." };
+    await db
+      .from("work_orders")
+      .update({ asset_manufacturer: manufacturer || null, asset_model: model || null, asset_serial: serial || null })
+      .eq("id", wo.id);
+    await db.from("events").insert({
+      org_id: wo.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: "asset_identified",
+      actor_type: "tradie",
+      actor_id: `contact:${resolved.contact_id}`,
+      payload: { manufacturer, model, serial },
+    });
+    return { ok: true };
+  },
+
+  async attachAssetReceipt(ownerToken, assetId, input) {
+    const row = await resolveTokenAny(ownerToken, ["owner_portal", "pm_portfolio"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: asset } = await db
+      .from("property_assets")
+      .select("id, org_id, property_id")
+      .eq("id", assetId)
+      .maybeSingle();
+    if (!asset) return { ok: false, error: "Asset not found." };
+    const { data: prop } = await db
+      .from("properties")
+      .select("owner_contact_id, pm_contact_id")
+      .eq("id", asset.property_id)
+      .maybeSingle();
+    const allowed =
+      (row.scope === "owner_portal" && prop?.owner_contact_id === row.aggregate_id) ||
+      (row.scope === "pm_portfolio" && prop?.pm_contact_id === row.contact_id);
+    if (!allowed) return { ok: false, error: "Asset not found." };
+    if (!input.dataUrl?.startsWith("data:")) return { ok: false, error: "Attach the receipt photo or PDF scan." };
+    const months = Math.max(0, Math.min(240, Math.round(input.warrantyMonths)));
+    const { error } = await db
+      .from("property_assets")
+      .update({
+        receipt_data_url: input.dataUrl,
+        purchased_at: input.purchasedAt || null,
+        manufacturer_warranty_months: months || null,
+      })
+      .eq("id", asset.id);
+    if (error) return { ok: false, error: error.message };
+    await db.from("events").insert({
+      org_id: asset.org_id,
+      aggregate_type: "property",
+      aggregate_id: asset.property_id,
+      event_type: "receipt_attached",
+      actor_type: row.scope === "owner_portal" ? "landlord" : "agency_user",
+      actor_id: `token:${row.id}`,
+      payload: { assetId: asset.id, purchasedAt: input.purchasedAt, warrantyMonths: months },
+    });
+    return { ok: true };
   },
 };
 
@@ -3892,7 +4022,7 @@ async function verifySettleCore(
 
   const { data: wo } = await db
     .from("work_orders")
-    .select("id, tradie_contact_id, quote_cents, call_out_fee_cents")
+    .select("id, tradie_contact_id, quote_cents, call_out_fee_cents, asset_manufacturer, asset_model, asset_serial")
     .eq("request_id", req.id)
     .maybeSingle();
   if (!wo) return { ok: true };
@@ -3937,6 +4067,11 @@ async function verifySettleCore(
 
   let assetId: string | null = null;
   if (playbook) {
+    const identity = {
+      ...(wo.asset_manufacturer ? { manufacturer: wo.asset_manufacturer } : {}),
+      ...(wo.asset_model ? { model: wo.asset_model } : {}),
+      ...(wo.asset_serial ? { serial_number: wo.asset_serial } : {}),
+    };
     const { data: existingAsset } = await db
       .from("property_assets")
       .select("id")
@@ -3944,11 +4079,14 @@ async function verifySettleCore(
       .eq("category", playbook.category)
       .eq("label", playbook.assetLabel)
       .maybeSingle();
-    if (existingAsset) assetId = existingAsset.id;
-    else {
+    if (existingAsset) {
+      assetId = existingAsset.id;
+      // The id-plate truth the tradie recorded on site lands on the record.
+      if (Object.keys(identity).length > 0) await db.from("property_assets").update(identity).eq("id", assetId);
+    } else {
       const { data: created } = await db
         .from("property_assets")
-        .insert({ org_id: req.org_id, property_id: req.property_id, category: playbook.category, label: playbook.assetLabel })
+        .insert({ org_id: req.org_id, property_id: req.property_id, category: playbook.category, label: playbook.assetLabel, ...identity })
         .select("id")
         .single();
       assetId = created?.id ?? null;
@@ -4514,12 +4652,19 @@ async function supabaseAssetsFor(db: ReturnType<typeof serviceClient>, propertyI
   const today = new Date();
   const { data: assets } = await db
     .from("property_assets")
-    .select("label, category, installed_at, properties(address_line1, suburb, state, postcode)")
+    .select("id, label, category, installed_at, manufacturer, model, serial_number, receipt_data_url, purchased_at, manufacturer_warranty_months, properties(address_line1, suburb, state, postcode)")
     .eq("property_id", propertyId);
   return ((assets ?? []) as Array<{
+    id: string;
     label: string;
     category: string;
     installed_at: string | null;
+    manufacturer: string | null;
+    model: string | null;
+    serial_number: string | null;
+    receipt_data_url: string | null;
+    purchased_at: string | null;
+    manufacturer_warranty_months: number | null;
     properties:
       | { address_line1: string; suburb: string; state: string; postcode: string }
       | { address_line1: string; suburb: string; state: string; postcode: string }[]
@@ -4531,7 +4676,12 @@ async function supabaseAssetsFor(db: ReturnType<typeof serviceClient>, propertyI
       installedAt: a.installed_at ? new Date(a.installed_at) : today,
       today,
     });
+    const mfrWarrantyUntil =
+      a.purchased_at && a.manufacturer_warranty_months
+        ? new Date(new Date(a.purchased_at).getTime() + a.manufacturer_warranty_months * 30 * 86_400_000).toISOString()
+        : null;
     return {
+      assetId: a.id,
       propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
       assetLabel: a.label,
       category: a.category as RequestCategory,
@@ -4541,6 +4691,11 @@ async function supabaseAssetsFor(db: ReturnType<typeof serviceClient>, propertyI
       status: a.installed_at ? horizon.status : ("healthy" as const),
       plannedReplacementCents: medians[a.category as RequestCategory] ?? null,
       disclaimer: "planning_estimate" as const,
+      manufacturer: a.manufacturer,
+      model: a.model,
+      serialNumber: a.serial_number,
+      receiptOnFile: Boolean(a.receipt_data_url),
+      manufacturerWarrantyUntil: mfrWarrantyUntil,
     };
   });
 }

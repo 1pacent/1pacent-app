@@ -37,6 +37,8 @@ import {
   type PropertyComplianceStatus,
   blendedAccuracyPct,
   computeTimeAccuracy,
+  countsTowardQuoteAccuracy,
+  countsTowardTimeAccuracy,
   paymentScheduleFor,
   splitPaymentWithFastPay,
   varianceNeedsApproval,
@@ -432,6 +434,10 @@ interface DemoWorkOrder {
   onSiteStartedAt?: string | null;
   estimatedMinutes?: number | null;
   actualMinutes?: number | null;
+  /** v8 R4b: id-plate truth recorded on site. */
+  assetManufacturer?: string | null;
+  assetModel?: string | null;
+  assetSerial?: string | null;
 }
 
 /** v8: payments mirror the (simulated) PSP — no custody, ever. */
@@ -460,6 +466,7 @@ interface DemoVariance {
   reason: string;
   status: "pending" | "approved" | "declined" | "auto_applied";
   decidedAt: string | null;
+  photoDataUrl?: string | null;
 }
 const demoVariances: DemoVariance[] = [];
 let demoVarianceSeq = 0;
@@ -524,6 +531,13 @@ interface DemoPropertyAsset {
   category: RequestCategory;
   label: string;
   installedAt: string | null;
+  /** v8 R4b: warranty identity. */
+  manufacturer?: string | null;
+  model?: string | null;
+  serialNumber?: string | null;
+  receiptDataUrl?: string | null;
+  purchasedAt?: string | null;
+  manufacturerWarrantyMonths?: number | null;
 }
 const propertyAssets: DemoPropertyAsset[] = [
   {
@@ -1319,6 +1333,11 @@ export const demoData: DataSource = {
       }
       const variances = completed
         .filter((w) => w.quoteCents !== null && w.quoteCents! > 0)
+        .filter((w) => {
+          const request = requests.find((r) => r.id === w.requestId);
+          const pb = request?.playbookKey ? getPlaybook(request.playbookKey) : null;
+          return countsTowardQuoteAccuracy(pb?.pricing.model ?? "quote_race"); // no playbook = tradie priced
+        })
         .map((w) => Math.abs(w.invoiceCents! - w.quoteCents!) / w.quoteCents!);
       const avgAbsVariancePct =
         variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
@@ -2029,11 +2048,15 @@ export const demoData: DataSource = {
     let bandLow: number | null = null;
     let bandHigh: number | null = null;
     let bookAmount: number | null = null;
+    let evidenceCount = 0;
+    let confidence: "low" | "medium" | "high" = "low";
     if (playbook.pricing.model === "fixed_band") {
       const band = estimatePriceBand(playbook.category, await demoData.getComparableJobs(propertyId, playbook.category));
       bandLow = band.lowCents;
       bandHigh = band.highCents;
       bookAmount = bookableAmountFromBand(band.lowCents, band.highCents);
+      evidenceCount = band.evidenceCount;
+      confidence = band.confidence;
     }
 
     const online = onlineTradieIds();
@@ -2054,6 +2077,8 @@ export const demoData: DataSource = {
       evidenceGates: [...playbook.evidenceGates],
       warrantyMonths: playbook.warrantyDefaultMonths,
       urgent,
+      evidenceCount,
+      confidence,
       slots: slots.map((s) => ({
         startAt: s.startAt.toISOString(),
         endAt: s.endAt.toISOString(),
@@ -2406,7 +2431,12 @@ export const demoData: DataSource = {
             installedAt: a.installedAt ? new Date(a.installedAt) : new Date(),
             today: new Date(),
           });
+          const mfrWarrantyUntil =
+            a.purchasedAt && a.manufacturerWarrantyMonths
+              ? new Date(new Date(a.purchasedAt).getTime() + a.manufacturerWarrantyMonths * 30 * 86_400_000).toISOString()
+              : null;
           return {
+            assetId: a.id,
             propertyAddress: `${property.address}, ${property.suburb}`,
             assetLabel: a.label,
             category: a.category,
@@ -2416,6 +2446,11 @@ export const demoData: DataSource = {
             status: a.installedAt ? horizon.status : ("healthy" as const),
             plannedReplacementCents: medians[a.category] ?? null,
             disclaimer: "planning_estimate" as const,
+            manufacturer: a.manufacturer ?? null,
+            model: a.model ?? null,
+            serialNumber: a.serialNumber ?? null,
+            receiptOnFile: Boolean(a.receiptDataUrl),
+            manufacturerWarrantyUntil: mfrWarrantyUntil,
           };
         }),
       history,
@@ -2680,6 +2715,7 @@ export const demoData: DataSource = {
       reason: input.reason.trim(),
       status: needsApproval ? "pending" : "auto_applied",
       decidedAt: needsApproval ? null : new Date().toISOString(),
+      photoDataUrl: input.photoDataUrl ?? null,
     };
     demoVariances.push(variance);
     demoWorkOrderEvents.push({
@@ -2798,6 +2834,47 @@ export const demoData: DataSource = {
     });
     demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "part_proposed", at: new Date().toISOString(), note: label });
     return { ok: true, needsApproval: true, varianceId: variance.id };
+  },
+
+  // ——— v8 R4b: warranty identity ———
+
+  async setAssetDetails(tradiePortalToken, workOrderId, input) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const wo = workOrders.find((w) => w.id === workOrderId && w.tradieContactId === resolved.contactId);
+    if (!wo) return { ok: false, error: "Job not found." };
+    const request = requests.find((r) => r.id === wo.requestId);
+    if (!request || !["in_progress", "evidence_pending"].includes(requestState(request))) {
+      return { ok: false, error: "Asset details are recorded on site." };
+    }
+    const manufacturer = input.manufacturer.trim().slice(0, 80);
+    const model = input.model.trim().slice(0, 80);
+    const serial = input.serial.trim().slice(0, 80);
+    if (!manufacturer && !model && !serial) return { ok: false, error: "Nothing to record." };
+    wo.assetManufacturer = manufacturer || null;
+    wo.assetModel = model || null;
+    wo.assetSerial = serial || null;
+    demoWorkOrderEvents.push({ workOrderId: wo.id, eventType: "asset_identified", at: new Date().toISOString(), note: `${manufacturer} ${model} ${serial}`.trim() });
+    return { ok: true };
+  },
+
+  async attachAssetReceipt(ownerToken, assetId, input) {
+    const resolved = resolveDemoToken(ownerToken);
+    if (!resolved || !["owner_portal", "pm_portfolio"].includes(resolved.scope)) {
+      return { ok: false, error: "This link isn't active." };
+    }
+    const asset = propertyAssets.find((a) => a.id === assetId);
+    if (!asset) return { ok: false, error: "Asset not found." };
+    const property = properties.find((p) => p.id === asset.propertyId);
+    const allowed =
+      (resolved.scope === "owner_portal" && property?.ownerContactId === resolved.aggregateId) ||
+      (resolved.scope === "pm_portfolio" && property?.pmContactId === resolved.contactId);
+    if (!allowed) return { ok: false, error: "Asset not found." };
+    if (!input.dataUrl?.startsWith("data:")) return { ok: false, error: "Attach the receipt photo or PDF scan." };
+    asset.receiptDataUrl = input.dataUrl;
+    asset.purchasedAt = input.purchasedAt || null;
+    asset.manufacturerWarrantyMonths = Math.max(0, Math.min(240, Math.round(input.warrantyMonths))) || null;
+    return { ok: true };
   },
 };
 
@@ -2965,6 +3042,10 @@ function demoVerifySettle(
         };
         propertyAssets.push(asset);
       }
+      // The id-plate truth the tradie recorded on site lands on the record.
+      if (wo.assetManufacturer) asset.manufacturer = wo.assetManufacturer;
+      if (wo.assetModel) asset.model = wo.assetModel;
+      if (wo.assetSerial) asset.serialNumber = wo.assetSerial;
       wo.assetId = asset.id;
       if (playbook.warrantyDefaultMonths > 0) {
         wo.warrantyExpiresAt = new Date(Date.now() + playbook.warrantyDefaultMonths * 30 * 86_400_000).toISOString();
@@ -3095,7 +3176,14 @@ function aggregateDemoPayments(
 function latestDemoVariance(requestId: string) {
   const v = demoVariances.filter((x) => x.requestId === requestId).at(-1);
   return v
-    ? { id: v.id, bookedCents: v.bookedCents, newTotalCents: v.newTotalCents, reason: v.reason, status: v.status }
+    ? {
+        id: v.id,
+        bookedCents: v.bookedCents,
+        newTotalCents: v.newTotalCents,
+        reason: v.reason,
+        status: v.status,
+        photoDataUrl: v.photoDataUrl ?? null,
+      }
     : null;
 }
 
@@ -3249,15 +3337,20 @@ function assetHorizonForProperties(propertyIds: string[]): AssetHorizonView[] {
   const today = new Date();
   const medians = networkMedians();
   return propertyAssets
-    .filter((a) => propertyIds.includes(a.propertyId) && a.installedAt)
+    .filter((a) => propertyIds.includes(a.propertyId))
     .map((a) => {
       const property = properties.find((p) => p.id === a.propertyId);
       const horizon = assessAssetHorizon({
         category: a.category,
-        installedAt: new Date(a.installedAt!),
+        installedAt: a.installedAt ? new Date(a.installedAt) : today,
         today,
       });
+      const mfrWarrantyUntil =
+        a.purchasedAt && a.manufacturerWarrantyMonths
+          ? new Date(new Date(a.purchasedAt).getTime() + a.manufacturerWarrantyMonths * 30 * 86_400_000).toISOString()
+          : null;
       return {
+        assetId: a.id,
         propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
         assetLabel: a.label,
         category: a.category,
@@ -3267,6 +3360,11 @@ function assetHorizonForProperties(propertyIds: string[]): AssetHorizonView[] {
         status: horizon.status,
         plannedReplacementCents: medians[a.category] ?? null,
         disclaimer: horizon.disclaimer,
+        manufacturer: a.manufacturer ?? null,
+        model: a.model ?? null,
+        serialNumber: a.serialNumber ?? null,
+        receiptOnFile: Boolean(a.receiptDataUrl),
+        manufacturerWarrantyUntil: mfrWarrantyUntil,
       };
     })
     .sort((a, b) => a.remainingLifeYears - b.remainingLifeYears);
@@ -3386,9 +3484,17 @@ function buildDataPackPayload(propertyId: string): Record<string, unknown> {
 }
 
 function tradieAccuracyFor(tradieContactId: string): TradieAccuracyView {
-  const completed = workOrders.filter(
+  const allCompleted = workOrders.filter(
     (w) => w.tradieContactId === tradieContactId && w.invoiceCents !== null && w.quoteCents !== null && w.quoteCents > 0,
   );
+  // FAIRNESS (core rule): only jobs the TRADIE priced count toward quote
+  // accuracy — network-priced fixed-band jobs are excluded.
+  const pricingOf = (w: DemoWorkOrder) => {
+    const request = requests.find((r) => r.id === w.requestId);
+    const pb = request?.playbookKey ? getPlaybook(request.playbookKey) : null;
+    return pb?.pricing.model ?? "quote_race"; // no playbook = the tradie priced it
+  };
+  const completed = allCompleted.filter((w) => countsTowardQuoteAccuracy(pricingOf(w)));
   const recentJobs = completed.slice(-5).map((w) => {
     const request = requests.find((r) => r.id === w.requestId);
     return {
@@ -3401,13 +3507,22 @@ function tradieAccuracyFor(tradieContactId: string): TradieAccuracyView {
   const variances = completed.map((w) => Math.abs(w.invoiceCents! - w.quoteCents!) / w.quoteCents!);
   const avgAbsVariancePct =
     variances.length > 0 ? (variances.reduce((a, b) => a + b, 0) / variances.length) * 100 : null;
+  const scopeChanged = new Set(
+    demoVariances.filter((v) => v.status === "approved" || v.status === "auto_applied").map((v) => v.workOrderId),
+  );
   const timeVariances = workOrders
-    .filter((w) => w.tradieContactId === tradieContactId && w.actualMinutes != null && (w.estimatedMinutes ?? 0) > 0)
+    .filter(
+      (w) =>
+        w.tradieContactId === tradieContactId &&
+        w.actualMinutes != null &&
+        (w.estimatedMinutes ?? 0) > 0 &&
+        countsTowardTimeAccuracy(scopeChanged.has(w.id) ? "approved" : "none"),
+    )
     .map((w) => computeTimeAccuracy(w.estimatedMinutes!, w.actualMinutes!).absVariancePct);
   const avgAbsTimeVariancePct =
     timeVariances.length > 0 ? timeVariances.reduce((a, b) => a + b, 0) / timeVariances.length : null;
   return {
-    completedJobs: completed.length,
+    completedJobs: allCompleted.length,
     avgAbsVariancePct,
     avgAbsTimeVariancePct,
     trustScore: scoreTrust({

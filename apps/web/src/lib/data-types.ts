@@ -366,6 +366,8 @@ export interface SpendingSummaryView {
 }
 
 export interface AssetHorizonView {
+  /** Present when the caller can act on the asset (receipt upload). */
+  assetId?: string;
   propertyAddress: string;
   assetLabel: string;
   category: RequestCategory;
@@ -376,6 +378,13 @@ export interface AssetHorizonView {
   /** Median replacement cost from comparables, when known. */
   plannedReplacementCents: number | null;
   disclaimer: "planning_estimate";
+  /** v8 R4b — warranty identity: what was fitted (tradie's id-plate entry)
+   * and proof of purchase (payer's receipt). */
+  manufacturer?: string | null;
+  model?: string | null;
+  serialNumber?: string | null;
+  receiptOnFile?: boolean;
+  manufacturerWarrantyUntil?: string | null;
 }
 
 export interface ObligationsCalendarView {
@@ -451,6 +460,11 @@ export interface BookingPreview {
   evidenceGates: string[];
   warrantyMonths: number;
   urgent: boolean;
+  /** Cold-start honesty: how many real completed jobs back this band, and
+   * the engine's stated confidence. Zero = introductory rate, and the UI
+   * must say so. */
+  evidenceCount: number;
+  confidence: "low" | "medium" | "high";
   /** Slot PROPOSALS — confirmed only when a tradie accepts (offer-don't-assume). */
   slots: SlotOption[];
   tradiesOnline: number;
@@ -529,6 +543,9 @@ export interface VarianceView {
   newTotalCents: number;
   reason: string;
   status: "pending" | "approved" | "declined" | "auto_applied";
+  /** The claim's evidence — protects the tradie (documented cause) and the
+   * payer (reviewable claim) alike. */
+  photoDataUrl: string | null;
 }
 
 export interface JobProjection {
@@ -903,7 +920,7 @@ export interface DataSource {
   proposeVariance(
     tradiePortalToken: string,
     workOrderId: string,
-    input: { newTotalCents: number; reason: string },
+    input: { newTotalCents: number; reason: string; photoDataUrl?: string | null },
   ): Promise<{ ok: boolean; needsApproval?: boolean; varianceId?: string; error?: string }>;
 
   /** The payer's decision on a pending variance — a human actor, in-app or
@@ -928,6 +945,24 @@ export interface DataSource {
     workOrderId: string,
     input: { label: string; costCents: number },
   ): Promise<{ ok: boolean; needsApproval?: boolean; varianceId?: string; error?: string }>;
+
+  // ——— v8 R4b: warranty identity ———
+
+  /** The tradie records what was actually fitted (id-plate truth) while on
+   * site; settle copies it onto the Address Record's asset. */
+  setAssetDetails(
+    tradiePortalToken: string,
+    workOrderId: string,
+    input: { manufacturer: string; model: string; serial: string },
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  /** The payer attaches proof of purchase (e.g. the aircon THEY bought) to
+   * an asset, with the manufacturer warranty it establishes. */
+  attachAssetReceipt(
+    ownerToken: string,
+    assetId: string,
+    input: { dataUrl: string; purchasedAt: string; warrantyMonths: number },
+  ): Promise<{ ok: boolean; error?: string }>;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

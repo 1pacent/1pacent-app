@@ -40,3 +40,22 @@ describe("blendedAccuracyPct", () => {
     expect(tightQuotesAlwaysLate).toBeLessThan(tightQuotesOnly);
   });
 });
+
+// ——— v8 R4b: fairness rules ———
+
+import { countsTowardQuoteAccuracy, countsTowardTimeAccuracy } from "../src/trust/actuals";
+
+describe("fairness: whose accuracy is it?", () => {
+  it("network-priced (fixed band) jobs never count against the tradie's quote accuracy", () => {
+    expect(countsTowardQuoteAccuracy("fixed_band")).toBe(false);
+    expect(countsTowardQuoteAccuracy("rate_card")).toBe(true);
+    expect(countsTowardQuoteAccuracy("quote_race")).toBe(true);
+  });
+
+  it("an approved scope change voids the time estimate; a declined one keeps it", () => {
+    expect(countsTowardTimeAccuracy("approved")).toBe(false);
+    expect(countsTowardTimeAccuracy("auto_applied")).toBe(false);
+    expect(countsTowardTimeAccuracy("declined")).toBe(true);
+    expect(countsTowardTimeAccuracy("none")).toBe(true);
+  });
+});

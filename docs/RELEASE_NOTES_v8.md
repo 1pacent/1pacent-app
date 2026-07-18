@@ -155,6 +155,45 @@ TRADIE-TOOL-Job-Actuals-Capture, Nelly's `materials_cost`) onto the v8 rails:
 
 Migration `0020_actuals_and_parts.sql` applied to live Supabase 2026-07-14.
 
+## R4b — Fairness, cold-start honesty, warranty identity (2026-07-18)
+
+The three hard questions, answered in code:
+
+- **"How is a scope blowout not the tradie's fault?"** Fairness rules in
+  core (`countsTowardQuoteAccuracy` / `countsTowardTimeAccuracy`, tested):
+  network-priced fixed-band jobs NEVER count toward the tradie's quote
+  accuracy (the tradie didn't set that price — a "leaking tap" that becomes
+  a repipe is a triage/Cost-Index miss); a payer-APPROVED or auto-applied
+  variance voids the time estimate (the job run isn't the job estimated);
+  a DECLINED variance keeps the job scored. Legacy quote-round jobs (no
+  playbook) count as tradie-priced. Applied in accuracy views AND the
+  ranking/Autopilot trust summaries, both stores.
+- **"How does the payer know work isn't manufactured?"** Variance proposals
+  now carry photo evidence (variances.photo_data_url) shown on the payer's
+  decision card; every proposal/decision is ledger'd; work pauses until the
+  payer decides; and variance frequency/decline history lives on the
+  tradie's record. Evidence protects both sides.
+- **"No network yet — what are prices based on?"** The evidence-tiered
+  engine was always honest internally (≥3 comparables → percentile band;
+  1–2 → widened; 0 → documented fallback); now the UI says it:
+  BookingPreview carries evidenceCount+confidence and the Button's price
+  sheet reads "Priced from N completed jobs…" or "Introductory network
+  rate — every completed job sharpens this price."
+- **Warranty identity** (the supplied-aircon case): the tradie records
+  manufacturer/model/serial from the id plate on site (work_orders →
+  copied to property_assets at settle, `asset_identified` event); the
+  landlord/PM attaches the purchase receipt (photo/PDF) + purchase date +
+  manufacturer warranty months on the Record (`receipt_attached` event).
+  The Record then shows the asset's full identity, the MANUFACTURER
+  warranty countdown (receipt-backed) alongside the tradie's WORKMANSHIP
+  warranty — two different promises, both on file. Scope-checked: only the
+  payer's seat can attach receipts.
+
+Migration `0022_fairness_and_warranty_identity.sql` — pending on live
+alongside 0021 (same DB-password blocker). 178 core tests; R4b demo E2E
+11 assertions green; prior E2Es re-run green (one expectation updated to
+the new fairness rule); build green.
+
 ## n8n consolidation (2026-07-13)
 
 **Rule (operator-stated): the VPS runs ONE shared n8n for every application**

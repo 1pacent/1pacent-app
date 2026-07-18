@@ -40,6 +40,29 @@ export function computeTimeAccuracy(estimatedMinutes: number, actualMinutes: num
 export const MONEY_WEIGHT = 0.7;
 export const TIME_WEIGHT = 0.3;
 
+/**
+ * FAIRNESS RULES (v8 R4b) — who priced the job decides whose accuracy it is.
+ *
+ * A fixed-band job is priced by the NETWORK's Cost Index from a photo and a
+ * sentence — the tradie never quoted it. If the "leaking tap" turns out to
+ * need new pipes, that is a triage/index miss, not the tradie's miss: such
+ * jobs never count toward the tradie's quote accuracy. Only jobs the tradie
+ * priced (their rate card, or a quote they submitted in a race) do.
+ */
+export function countsTowardQuoteAccuracy(pricingModel: "fixed_band" | "rate_card" | "quote_race"): boolean {
+  return pricingModel !== "fixed_band";
+}
+
+/**
+ * And once the payer APPROVES a scope change, the original time estimate is
+ * void — the job the tradie ran is not the job that was estimated. Approved
+ * or auto-applied variances take the job out of time-accuracy scoring;
+ * a DECLINED variance keeps it in (the scope legally didn't change).
+ */
+export function countsTowardTimeAccuracy(varianceStatus: "none" | "pending" | "approved" | "declined" | "auto_applied"): boolean {
+  return varianceStatus === "none" || varianceStatus === "declined";
+}
+
 export function blendedAccuracyPct(
   avgAbsMoneyVariancePct: number | null,
   avgAbsTimeVariancePct: number | null,

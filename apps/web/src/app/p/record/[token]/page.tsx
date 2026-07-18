@@ -1,6 +1,7 @@
 import { getData } from "@/lib/data";
 import { Panel, PulseTopBar } from "@/components/pulse/shell";
 import { DataPackCard } from "./datapack-card";
+import { ReceiptCard } from "./receipt-card";
 
 export const dynamic = "force-dynamic";
 
@@ -72,20 +73,38 @@ export default async function RecordPage({
             <p className="mb-2 text-[10px] uppercase tracking-widest text-white/40">Assets on record</p>
             <div className="flex flex-col gap-2">
               {record.assets.map((a) => (
-                <div key={a.assetLabel} className="flex items-center justify-between text-sm">
-                  <div>
-                    <p className="text-white/80">{a.assetLabel}</p>
-                    {a.ageYears > 0 && (
-                      <p className="text-xs text-white/40">
-                        year {a.ageYears} of {a.effectiveLifeYears} · {a.remainingLifeYears}y left
-                        <span className="text-white/25"> (planning estimate)</span>
-                      </p>
+                <div key={a.assetLabel} className="text-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-white/80">{a.assetLabel}</p>
+                      {(a.manufacturer || a.model || a.serialNumber) && (
+                        <p className="text-xs text-white/50">
+                          {[a.manufacturer, a.model].filter(Boolean).join(" ")}
+                          {a.serialNumber ? ` · s/n ${a.serialNumber}` : ""}
+                        </p>
+                      )}
+                      {a.ageYears > 0 && (
+                        <p className="text-xs text-white/40">
+                          year {a.ageYears} of {a.effectiveLifeYears} · {a.remainingLifeYears}y left
+                          <span className="text-white/25"> (planning estimate)</span>
+                        </p>
+                      )}
+                      {a.manufacturerWarrantyUntil && (
+                        <p className="text-xs text-mint-300">
+                          🛡 manufacturer warranty until{" "}
+                          {new Date(a.manufacturerWarrantyUntil).toLocaleDateString("en-AU", { month: "short", year: "numeric" })}
+                          {a.receiptOnFile ? " · receipt on file ✓" : ""}
+                        </p>
+                      )}
+                    </div>
+                    {a.status !== "healthy" && (
+                      <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-300">
+                        plan ahead
+                      </span>
                     )}
                   </div>
-                  {a.status !== "healthy" && (
-                    <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-300">
-                      plan ahead
-                    </span>
+                  {record.spend12moCents !== null && a.assetId && !a.receiptOnFile && (
+                    <ReceiptCard token={token} assetId={a.assetId} assetLabel={a.assetLabel} />
                   )}
                 </div>
               ))}

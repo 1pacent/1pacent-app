@@ -236,7 +236,7 @@ export async function proposeVarianceAction(
   token: string,
   workOrderId: string,
   requestId: string,
-  input: { newTotalCents: number; reason: string },
+  input: { newTotalCents: number; reason: string; photoDataUrl?: string | null },
 ) {
   const result = await (await getData()).proposeVariance(token, workOrderId, input);
   if (result.ok) {
@@ -281,6 +281,25 @@ export async function generateDataPackAction(token: string, propertyId: string) 
 }
 
 // ——— v8 R3.5: parts to job ———
+
+export async function setAssetDetailsAction(
+  token: string,
+  workOrderId: string,
+  requestId: string,
+  input: { manufacturer: string; model: string; serial: string },
+) {
+  const result = await (await getData()).setAssetDetails(token, workOrderId, input);
+  if (result.ok) await poke(jobTopic(requestId));
+  return result;
+}
+
+export async function attachAssetReceiptAction(
+  token: string,
+  assetId: string,
+  input: { dataUrl: string; purchasedAt: string; warrantyMonths: number },
+) {
+  return (await getData()).attachAssetReceipt(token, assetId, input);
+}
 
 export async function addJobPartAction(
   token: string,
