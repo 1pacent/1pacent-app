@@ -264,3 +264,14 @@ only shared service between the two projects remains the one n8n.
 Env: `HERMES_URL=https://api.1pacent.com/hermes`, `HERMES_API_KEY`,
 `HERMES_OPENAI_COMPAT=1`, `HERMES_AGENT=felix` — set on VPS `.env` and
 Vercel production. Without them the app runs exactly as before, minus Felix.
+
+**Post-deploy hardening (same day):**
+- Felix's honcho memory was unreachable from the container
+  (host.docker.internal → 127.0.0.1-bound port refused). Fixed by joining
+  `hermes-1pacent` to the external `honcho_net` and pointing
+  `HONCHO_URL=http://honcho-1pacent:8000`; `/opt/honcho/docker-compose.yml`
+  container names corrected to `honcho-1pacent` / `honcho-1pacent-postgres`.
+- Live test caught Felix inventing a "$0.01 verification charge" for
+  renters. SOUL.md now pins the money facts (renters never pay anything; no
+  fee of any kind exists; payer sees price upfront, capture on verify; any
+  other number comes from the DB or "not on record"). Verified fixed in prod.
