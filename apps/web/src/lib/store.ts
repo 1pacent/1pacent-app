@@ -17,6 +17,8 @@ import {
   getPlaybook,
   isUrgentCategory,
   playbookForCategory,
+  tradieMatchesJob,
+  tradesForCategory,
   projectState,
   proposeSlots,
   rankQuotes,
@@ -327,15 +329,17 @@ interface DemoContact {
   /** v8 R5b: staff belong to a business contact. */
   employerContactId?: string;
   phone?: string;
+  /** v8 R8.1: drives trade matching at dispatch (core trade-match rules). */
+  tradeType?: string;
 }
 
 const contacts: DemoContact[] = [
   { id: "contact-tenant-1", kind: "tenant", fullName: "Priya Nair", email: "mac@1pacent.com" },
   { id: "contact-owner-mark", kind: "owner", fullName: "Mark McNamara", email: "mac@1pacent.com" },
   { id: "contact-pm-jordan", kind: "property_manager", fullName: "Jordan Blake", email: "mac@1pacent.com" },
-  { id: "contact-tradie-john", kind: "tradie", fullName: "John Snow", email: "mac@1pacent.com" },
-  { id: "contact-tradie-leo", kind: "tradie", fullName: "Leo Baker", email: "mac@1pacent.com" },
-  { id: "contact-tradie-sarah", kind: "tradie", fullName: "Sarah Mannis", email: "mac@1pacent.com" },
+  { id: "contact-tradie-john", kind: "tradie", fullName: "John Snow", email: "mac@1pacent.com", tradeType: "electrical" },
+  { id: "contact-tradie-leo", kind: "tradie", fullName: "Leo Baker", email: "mac@1pacent.com", tradeType: "plumbing" },
+  { id: "contact-tradie-sarah", kind: "tradie", fullName: "Sarah Mannis", email: "mac@1pacent.com", tradeType: "general_maintenance" },
 ];
 let demoContactSeq = 0;
 
@@ -657,6 +661,16 @@ const demoTokens: Record<
     scope: "tradie_portal",
     aggregateId: "contact-tradie-john",
     contactId: "contact-tradie-john",
+  },
+  "demo-tradie-leo": {
+    scope: "tradie_portal",
+    aggregateId: "contact-tradie-leo",
+    contactId: "contact-tradie-leo",
+  },
+  "demo-tradie-sarah": {
+    scope: "tradie_portal",
+    aggregateId: "contact-tradie-sarah",
+    contactId: "contact-tradie-sarah",
   },
   "demo-pm-portfolio": {
     scope: "pm_portfolio",
@@ -1155,8 +1169,19 @@ export const demoData: DataSource = {
     if (!result.ok) return { ok: false, error: `Cannot request quotes from state "${current}".` };
 
     const property = properties.find((p) => p.id === request.propertyId);
-    const tradies = contacts.filter((c) => c.kind === "tradie").slice(0, 3);
-    if (tradies.length === 0) return { ok: false, error: "No tradie contacts configured for this org." };
+    // Trade-matched invites (v8 R8.1) — mirrors the supabase store: only
+    // matching trades hear about the job (handyman rule in core), Online first.
+    const playbook = (request.playbookKey ? getPlaybook(request.playbookKey) : null) ?? playbookForCategory(request.category);
+    const inviteeTarget = playbook.pricing.model === "quote_race" ? playbook.pricing.invitees : 3;
+    const online = new Set(onlineTradieIds());
+    const tradies = contacts
+      .filter((c) => c.kind === "tradie" && !c.employerContactId && tradieMatchesJob(c.tradeType, request.category, playbook))
+      .sort((a, b) => (online.has(b.id) ? 1 : 0) - (online.has(a.id) ? 1 : 0))
+      .slice(0, inviteeTarget);
+    if (tradies.length === 0) {
+      const wanted = tradesForCategory(request.category).join(" / ");
+      return { ok: false, error: `No ${wanted} tradies in the network yet for this job — the operator has been flagged.` };
+    }
 
     request.events.push({
       eventType: "request_quotes",
@@ -1205,6 +1230,26 @@ export const demoData: DataSource = {
       requestDescription: request.description,
       propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
     };
+  },
+
+  async submitOfferQuote(
+    tradiePortalToken: string,
+    quoteId: string,
+    input: { quoteCents: number; callOutFeeCents: number; note?: string },
+  ) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) {
+      return { ok: false as const, error: "This link isn't active." };
+    }
+    const quote = quotes.find((q) => q.id === quoteId && q.tradieContactId === demoBizId(resolved.contactId!));
+    if (!quote) return { ok: false as const, error: "Quote not found." };
+    if (quote.status !== "invited") {
+      return { ok: false as const, error: "This quote has already been submitted or is no longer open." };
+    }
+    // Reuse the token path's validation + approval-round logic verbatim.
+    const jobToken = issueDemoToken("tradie_job", quote.id, quote.tradieContactId);
+    const result = await demoData.submitQuoteByToken(jobToken, input);
+    return result.ok ? { ...result, requestId: quote.requestId } : result;
   },
 
   async getQuoteContext(token: string): Promise<QuoteContext | null> {
@@ -2183,12 +2228,17 @@ export const demoData: DataSource = {
     request.events.push({ eventType: "request_quotes", actorType: "system", actorId: "george:offer", at: now });
     // House dispatch (v8 R7): small jobs at a PM-managed property go to the
     // PM's chosen defaults first.
-    let online = onlineTradieIds().slice(0, 3);
+    const matchesTrade = (id: string) => {
+      const c = contacts.find((cc) => cc.id === id);
+      return tradieMatchesJob(c?.tradeType, playbook.category, playbook);
+    };
+    let online = onlineTradieIds().filter(matchesTrade).slice(0, 3);
     const bookProp = properties.find((pp) => pp.id === propertyId);
     if (bookProp?.pmContactId) {
       const house = demoHouseTradies[bookProp.pmContactId];
-      if (house && house.tradieContactIds.length > 0 && amount <= house.maxJobCents) {
-        online = house.tradieContactIds.slice(0, 3);
+      const houseMatched = house ? house.tradieContactIds.filter(matchesTrade) : [];
+      if (house && houseMatched.length > 0 && amount <= house.maxJobCents) {
+        online = houseMatched.slice(0, 3);
         demoWorkOrderEvents.push({
           workOrderId: request.id,
           eventType: "house_dispatch",
@@ -2222,7 +2272,8 @@ export const demoData: DataSource = {
         const request = requests.find((r) => r.id === q.requestId);
         if (!request || requestState(request) !== "quoting" || !request.playbookKey) return null;
         const playbook = getPlaybook(request.playbookKey);
-        if (!playbook || playbook.pricing.model !== "fixed_band") return null;
+        if (!playbook) return null;
+        const kind = playbook.pricing.model === "fixed_band" ? ("fixed" as const) : ("quote_race" as const);
         const property = properties.find((p) => p.id === request.propertyId);
         const slot = request.bookedStartAt
           ? {
@@ -2237,6 +2288,7 @@ export const demoData: DataSource = {
         return {
           quoteId: q.id,
           requestId: request.id,
+          kind,
           title: request.title,
           playbookTitle: playbook.title,
           propertyAddress: property ? `${property.address}, ${property.suburb}` : "",
@@ -2263,6 +2315,10 @@ export const demoData: DataSource = {
     const request = requests.find((r) => r.id === quote.requestId);
     if (!request || requestState(request) !== "quoting") {
       return { ok: false as const, error: "That job's gone — another tradie got there first." };
+    }
+    const offerPlaybook = request.playbookKey ? getPlaybook(request.playbookKey) : null;
+    if (offerPlaybook && offerPlaybook.pricing.model !== "fixed_band") {
+      return { ok: false as const, error: "This job runs a quote race — submit your price instead." };
     }
     // The tradie's tap is the human event on this side of the market.
     quote.status = "submitted";

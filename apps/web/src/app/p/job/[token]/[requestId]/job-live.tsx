@@ -89,6 +89,12 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
 
       <Panel glow={job.arcStep !== "paid"}>
         <StatusArc arc={job.arc} />
+        {job.state === "quoting" && (
+          <p className="mt-2 text-center text-xs text-white/60">
+            📝 Bigger job — matched specialists are pricing it now. Nothing is locked in until the best-value quote wins
+            {job.viewer === "occupant" ? "; you don't pay either way." : "."}
+          </p>
+        )}
         {job.slot && (
           <p className="mt-2 text-center text-sm font-semibold text-white/80">📅 {job.slot.label}</p>
         )}

@@ -275,3 +275,40 @@ Vercel production. Without them the app runs exactly as before, minus Felix.
   renters. SOUL.md now pins the money facts (renters never pay anything; no
   fee of any kind exists; payer sees price upfront, capture on verify; any
   other number comes from the DB or "not on record"). Verified fixed in prod.
+
+## R8.1 — Trade-matched dispatch & the visible quote race (2026-07-19)
+
+Operator UAT of the HWS-replacement (quote race) flow found the engine ran
+but the flow went dark: invites went to the first 3 contacts regardless of
+trade, the tradie seat structurally hid quote-race invites (fixed-band-only
+filter), and the renter saw "Booked." for a job that was actually quoting.
+
+- **Trade matching is now deterministic core logic**
+  (`packages/core/src/dispatch/trade-match.ts`, tested): every category maps
+  to the specialist trades that may hear about it; a plumber never sees an
+  electrical job. **The handyman rule:** `general_maintenance` (and unknown
+  trade types, conservatively) can take any SMALL job — fixed-band priced
+  AND filing no compliance certificate. Quote races and certificate work
+  (gas, smoke alarm) stay with specialists.
+- **Both dispatch paths filter + rank**: quote-race invites (trade-matched →
+  Online first → best rolling quote accuracy → most jobs; invitee count from
+  the playbook) and instant fixed-band pings (Online matched only). House
+  tradies are filtered too — a PM's default sparky is never pinged for a
+  burst pipe; no eligible match falls back to the open network. The
+  `request_quotes` event records the matching decision. Zero eligible
+  tradies now fails the booking honestly ("No plumbing tradies in the
+  network yet…").
+- **Quote races are visible on the tradie seat**: `JobOfferView.kind`
+  (`fixed` | `quote_race`); race invites render as "📝 jobs want your quote"
+  cards with an in-app price + note form (`submitOfferQuoteAction` →
+  `submitOfferQuote` in both stores, same validation + approval-round logic
+  as the emailed `/q/{token}` path, which still works). One-tap accept on a
+  race is refused server-side ("submit your price instead").
+- **Honest renter copy**: the fix-flow confirm now says "Quotes on the way."
+  with the matched-specialist count (instead of "Booked."), and the job
+  screen shows a quoting banner under the arc; occupants are reminded they
+  don't pay either way.
+- Demo parity: demo tradies carry trade types mirroring live (John Snow
+  electrical, Leo Baker plumbing, Sarah Mannis general_maintenance); new
+  seeded seats `demo-tradie-leo` / `demo-tradie-sarah`. e2e (16 checks) +
+  202 core tests green.

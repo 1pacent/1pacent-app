@@ -22,6 +22,8 @@ import {
   issueToken,
   paymentScheduleFor,
   playbookForCategory,
+  tradieMatchesJob,
+  tradesForCategory,
   projectState,
   proposeSlots,
   rankQuotes,
@@ -749,7 +751,7 @@ export const supabaseData: DataSource = {
     const db = serviceClient();
     const { data: req } = await db
       .from("maintenance_requests")
-      .select("id, org_id, title, description, status, property_id")
+      .select("id, org_id, title, description, status, property_id, category, playbook_key")
       .eq("id", requestId)
       .maybeSingle();
     if (!req) return { ok: false, error: "Request not found." };
@@ -765,16 +767,48 @@ export const supabaseData: DataSource = {
       .maybeSingle();
     const propertyAddress = prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "";
 
-    const { data: tradies } = await db
+    // Trade-matched, ranked invites (v8 R8.1): only tradies whose trade
+    // covers this category are invited (handyman rule in core); ranked
+    // Online-first, then proven quote accuracy, then experience.
+    const category = (req.category ?? "other") as RequestCategory;
+    const playbook = (req.playbook_key ? getPlaybook(req.playbook_key) : null) ?? playbookForCategory(category);
+    const inviteeTarget = playbook.pricing.model === "quote_race" ? playbook.pricing.invitees : 3;
+    const { data: allTradies } = await db
       .from("contacts")
-      .select("id, full_name, email")
+      .select("id, full_name, email, trade_type, created_at")
       .eq("org_id", req.org_id)
       .eq("kind", "tradie")
-      .order("created_at", { ascending: true })
-      .limit(3);
-    if (!tradies || tradies.length === 0) {
-      return { ok: false, error: "No tradie contacts configured for this org." };
+      .is("employer_contact_id", null)
+      .order("created_at", { ascending: true });
+    const eligible = ((allTradies ?? []) as Array<{ id: string; full_name: string; email: string | null; trade_type: string | null }>).filter(
+      (t) => tradieMatchesJob(t.trade_type, category, playbook),
+    );
+    if (eligible.length === 0) {
+      const wanted = tradesForCategory(category).join(" / ");
+      return { ok: false, error: `No ${wanted} tradies in the network yet for this job — the operator has been flagged.` };
     }
+    const online = new Set(await onlineTradieIds(db));
+    const { data: trustRows } = await db
+      .from("tradie_trust_scores")
+      .select("tradie_contact_id, completed_jobs, avg_abs_variance_pct")
+      .in("tradie_contact_id", eligible.map((t) => t.id));
+    const trust = new Map(
+      ((trustRows ?? []) as Array<{ tradie_contact_id: string; completed_jobs: number; avg_abs_variance_pct: number | null }>).map(
+        (r) => [r.tradie_contact_id, r] as const,
+      ),
+    );
+    const rankVariance = (id: string) => {
+      const v = trust.get(id)?.avg_abs_variance_pct;
+      return v === null || v === undefined ? 1 : Number(v); // unproven ranks below proven accuracy
+    };
+    const tradies = [...eligible]
+      .sort(
+        (a, b) =>
+          (online.has(b.id) ? 1 : 0) - (online.has(a.id) ? 1 : 0) ||
+          rankVariance(a.id) - rankVariance(b.id) ||
+          (trust.get(b.id)?.completed_jobs ?? 0) - (trust.get(a.id)?.completed_jobs ?? 0),
+      )
+      .slice(0, inviteeTarget);
 
     await db.from("events").insert({
       org_id: req.org_id,
@@ -783,6 +817,7 @@ export const supabaseData: DataSource = {
       event_type: "request_quotes",
       actor_type: "system",
       actor_id: "quote-dispatch",
+      payload: { note: `Matched trades: ${tradesForCategory(category).join(", ")} — invited ${tradies.length} of ${eligible.length} eligible.` },
     });
     await db.from("maintenance_requests").update({ status: result.state }).eq("id", req.id);
 
@@ -974,6 +1009,55 @@ export const supabaseData: DataSource = {
     // policy pre-approves the winner. Shared with the auto-quote hook.
     const autoAccepted = await maybeAutoAcceptAfterQuoteRound(db, quote.id);
     return autoAccepted ? { ok: true as const, autoAccepted } : { ok: true as const };
+  },
+
+  async submitOfferQuote(
+    tradiePortalToken: string,
+    quoteId: string,
+    input: { quoteCents: number; callOutFeeCents: number; note?: string },
+  ) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false as const, error: "This link isn't active." };
+    try {
+      validateQuoteSubmission({ quoteCents: input.quoteCents, callOutFeeCents: input.callOutFeeCents, note: input.note });
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : "Invalid quote amount." };
+    }
+    const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
+    const { data: quote } = await db
+      .from("quotes")
+      .select("id, org_id, request_id, status, tradie_contact_id")
+      .eq("id", quoteId)
+      .maybeSingle();
+    if (!quote || quote.tradie_contact_id !== bizId) return { ok: false as const, error: "Quote not found." };
+    if (quote.status !== "invited") {
+      return { ok: false as const, error: "This quote has already been submitted or is no longer open." };
+    }
+    const { error } = await db
+      .from("quotes")
+      .update({
+        status: "submitted",
+        quote_cents: input.quoteCents,
+        call_out_fee_cents: input.callOutFeeCents,
+        note: input.note ?? null,
+        submitted_at: new Date().toISOString(),
+      })
+      .eq("id", quote.id)
+      .eq("status", "invited");
+    if (error) return { ok: false as const, error: `Could not save your quote: ${error.message}` };
+    await db.from("events").insert({
+      org_id: quote.org_id,
+      aggregate_type: "quote",
+      aggregate_id: quote.id,
+      event_type: "quote_submitted",
+      actor_type: "tradie",
+      actor_id: `contact:${resolved.contact_id}`,
+    });
+    const autoAccepted = await maybeAutoAcceptAfterQuoteRound(db, quote.id);
+    return autoAccepted
+      ? { ok: true as const, requestId: quote.request_id as string, autoAccepted }
+      : { ok: true as const, requestId: quote.request_id as string };
   },
 
   async listQuotesForRequest(requestId: string): Promise<QuoteSummary[]> {
@@ -2689,14 +2773,24 @@ export const supabaseData: DataSource = {
     // House dispatch (v8 R7): small jobs at a PM-managed property go to the
     // PM's chosen defaults first — their own handyman, the onsite man, or a
     // standing agreement — instead of the open network.
-    let onlineIds = (await onlineTradieIds(db)).slice(0, 3);
+    // Trade match (v8 R8.1): the instant offer only pings tradies whose
+    // trade covers the category — handymen qualify for small no-certificate
+    // jobs (the rule lives in core). Applies to house tradies too: a PM's
+    // default sparky never gets pinged for a burst pipe.
+    const tradeMatched = async (ids: string[]): Promise<string[]> => {
+      if (ids.length === 0) return ids;
+      const { data: cs } = await db.from("contacts").select("id, trade_type").in("id", ids);
+      const byId = new Map(((cs ?? []) as Array<{ id: string; trade_type: string | null }>).map((c) => [c.id, c.trade_type] as const));
+      return ids.filter((id) => tradieMatchesJob(byId.get(id) ?? null, playbook.category, playbook));
+    };
+    let onlineIds = (await tradeMatched(await onlineTradieIds(db))).slice(0, 3);
     let dispatchMode: "network" | "house" = "network";
     if (prop.pm_contact_id) {
       const [{ data: house }, { data: prefs }] = await Promise.all([
         db.from("pm_preferred_tradies").select("tradie_contact_id, priority").eq("pm_contact_id", prop.pm_contact_id).order("priority"),
         db.from("pm_dispatch_prefs").select("house_max_job_cents").eq("pm_contact_id", prop.pm_contact_id).maybeSingle(),
       ]);
-      const houseIds = ((house ?? []) as Array<{ tradie_contact_id: string }>).map((h) => h.tradie_contact_id);
+      const houseIds = await tradeMatched(((house ?? []) as Array<{ tradie_contact_id: string }>).map((h) => h.tradie_contact_id));
       const ceiling = prefs ? Number(prefs.house_max_job_cents) : 30_000;
       if (houseIds.length > 0 && amount <= ceiling) {
         onlineIds = houseIds.slice(0, 3);
@@ -2760,7 +2854,8 @@ export const supabaseData: DataSource = {
     for (const row of rows) {
       const req = row.maintenance_requests;
       const playbook = req.playbook_key ? getPlaybook(req.playbook_key) : null;
-      if (!playbook || playbook.pricing.model !== "fixed_band") continue;
+      if (!playbook) continue;
+      const kind = playbook.pricing.model === "fixed_band" ? ("fixed" as const) : ("quote_race" as const);
       const prop = Array.isArray(req.properties) ? req.properties[0] : req.properties;
       const { data: assets } = await db
         .from("property_assets")
@@ -2769,6 +2864,7 @@ export const supabaseData: DataSource = {
       offers.push({
         quoteId: row.id,
         requestId: req.id,
+        kind,
         title: req.title,
         playbookTitle: playbook.title,
         propertyAddress: prop ? `${prop.address_line1}, ${prop.suburb} ${prop.state} ${prop.postcode}` : "",
@@ -2807,11 +2903,15 @@ export const supabaseData: DataSource = {
     }
     const { data: reqRow } = await db
       .from("maintenance_requests")
-      .select("id, org_id, status")
+      .select("id, org_id, status, playbook_key")
       .eq("id", quote.request_id)
       .maybeSingle();
     if (!reqRow || (reqRow.status as RequestState) !== "quoting") {
       return { ok: false, error: "That job's gone — another tradie got there first." };
+    }
+    const offerPlaybook = reqRow.playbook_key ? getPlaybook(reqRow.playbook_key) : null;
+    if (offerPlaybook && offerPlaybook.pricing.model !== "fixed_band") {
+      return { ok: false, error: "This job runs a quote race — submit your price instead." };
     }
     // The tradie's tap — the human event on this side of the market.
     const { data: claimed } = await db

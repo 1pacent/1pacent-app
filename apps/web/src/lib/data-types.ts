@@ -491,6 +491,8 @@ export type BookJobResult =
 export interface JobOfferView {
   quoteId: string;
   requestId: string;
+  /** fixed = one-tap accept at the shown payout; quote_race = tradie names a price. */
+  kind: "fixed" | "quote_race";
   title: string;
   playbookTitle: string;
   propertyAddress: string;
@@ -849,6 +851,12 @@ export interface DataSource {
 
   /** The tradie's pings — open offers on fixed-band jobs. First accept wins. */
   getOpenOffers(tradiePortalToken: string): Promise<JobOfferView[]>;
+  /** Seat-side quote submission for quote-race invites (v8 R8.1). */
+  submitOfferQuote(
+    tradiePortalToken: string,
+    quoteId: string,
+    input: { quoteCents: number; callOutFeeCents: number; note?: string },
+  ): Promise<{ ok: true; requestId: string; autoAccepted?: unknown } | { ok: false; error: string }>;
   acceptJobOffer(
     tradiePortalToken: string,
     quoteId: string,

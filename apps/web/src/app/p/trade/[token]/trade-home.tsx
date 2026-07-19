@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { HiVisButton, Panel } from "@/components/pulse/shell";
 import { useLive } from "@/components/pulse/use-live";
 import type { JobOfferView } from "@/lib/data-types";
-import { acceptOfferAction, setOnlineAction } from "../../actions";
+import { acceptOfferAction, setOnlineAction, submitOfferQuoteAction } from "../../actions";
 
 /**
  * The tradie seat (Product Strategy v8 §3): go Online like a driver; jobs
@@ -34,7 +34,8 @@ export function TradeHome({ token, name, initial }: { token: string; name: strin
 
   useLive("trade-all");
 
-  const offers = initial.offers;
+  const offers = initial.offers.filter((o) => o.kind === "fixed");
+  const quoteInvites = initial.offers.filter((o) => o.kind === "quote_race");
   const jobs = initial.jobs;
 
   return (
@@ -83,6 +84,16 @@ export function TradeHome({ token, name, initial }: { token: string; name: strin
       </button>
 
       {/* Pings */}
+      {quoteInvites.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs font-semibold uppercase tracking-widest text-hivis-400">
+            📝 {quoteInvites.length} job{quoteInvites.length === 1 ? "" : "s"} want your quote
+          </p>
+          {quoteInvites.map((o) => (
+            <QuoteInviteCard key={o.quoteId} token={token} offer={o} />
+          ))}
+        </div>
+      )}
       {online && offers.length > 0 && (
         <div className="flex flex-col gap-3">
           <p className="text-xs font-semibold uppercase tracking-widest text-hivis-400">
@@ -181,6 +192,85 @@ export function TradeHome({ token, name, initial }: { token: string; name: strin
           </div>
         </Panel>
       )}
+    </div>
+  );
+}
+
+/** A quote-race invite: bigger scope, the tradie names their price. Submitting
+ * enters the race; the payer (or their policy) picks the winner. */
+function QuoteInviteCard({ token, offer }: { token: string; offer: JobOfferView }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [state, setState] = useState<"idle" | "sent">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const router = useRouter();
+
+  if (state === "sent") {
+    return (
+      <div className="rounded-2xl border border-field-line bg-field-900 p-4">
+        <p className="font-bold text-white">✅ Quote in — {offer.title}</p>
+        <p className="mt-1 text-xs text-white/50">You&apos;ll hear the moment the payer decides. Wins pay same-day on verify.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="hivis-ping-in rounded-2xl border border-hivis-400/60 bg-field-900 p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="font-bold text-white">{offer.title}</p>
+          <p className="text-xs text-white/50">{offer.propertyAddress}</p>
+          <p className="mt-1 text-xs font-semibold text-hivis-400">
+            {offer.urgent ? "⚡ Urgent · " : ""}Quote race — your price, best value wins
+          </p>
+        </div>
+      </div>
+      {offer.briefing.length > 0 && (
+        <p className="mt-2 rounded-xl bg-field-800 px-3 py-2 text-xs text-white/60">🏠 Site briefing: {offer.briefing.join(" · ")}</p>
+      )}
+      <form
+        className="mt-3 flex flex-col gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const cents = Math.round(Number(amount) * 100);
+          if (!Number.isFinite(cents) || cents <= 0) {
+            setError("Enter your all-in price in dollars.");
+            return;
+          }
+          setError(null);
+          startTransition(async () => {
+            const r = await submitOfferQuoteAction(token, offer.quoteId, { quoteCents: cents, note: note.trim() || undefined });
+            if (r.ok) {
+              setState("sent");
+              router.refresh();
+            } else {
+              setError(r.error ?? "Could not submit your quote.");
+            }
+          });
+        }}
+      >
+        <div className="flex gap-2">
+          <div className="flex flex-1 items-center rounded-xl border border-field-line bg-field-950 px-3">
+            <span className="text-sm text-white/50">$</span>
+            <input
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="All-in price"
+              className="min-w-0 flex-1 bg-transparent px-2 py-2 text-sm text-white outline-none placeholder:text-white/30"
+            />
+          </div>
+          <HiVisButton type="submit" disabled={pending || !amount}>{pending ? "Sending…" : "Submit quote"}</HiVisButton>
+        </div>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Note for the payer (optional — what's included)"
+          className="rounded-xl border border-field-line bg-field-950 px-3 py-2 text-sm text-white outline-none placeholder:text-white/30"
+        />
+        {error && <p className="text-xs text-red-400">{error}</p>}
+      </form>
     </div>
   );
 }

@@ -324,11 +324,13 @@ export function FixFlow({
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center hivis-ping-in">
       <span className="flex h-20 w-20 items-center justify-center rounded-full bg-mint-400 text-4xl">✓</span>
-      <h1 className="font-serif text-2xl font-semibold">Booked.</h1>
+      <h1 className="font-serif text-2xl font-semibold">{booked?.amountCents === null ? "Quotes on the way." : "Booked."}</h1>
       <p className="max-w-[260px] text-sm text-white/50">
-        {booked?.offered
-          ? `Pinging ${booked.offered} verified tradie${booked.offered === 1 ? "" : "s"} near you — first to accept is yours.`
-          : "Your quote race is under way."}
+        {booked?.amountCents === null
+          ? `Bigger job — we've asked ${booked?.offered ?? "our"} matched specialist${booked?.offered === 1 ? "" : "s"} to price it. Best value wins and you'll know the moment it's locked in.`
+          : booked?.offered
+            ? `Pinging ${booked.offered} verified tradie${booked.offered === 1 ? "" : "s"} near you — first to accept is yours.`
+            : "Your quote race is under way."}
       </p>
     </div>
   );

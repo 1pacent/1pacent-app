@@ -20,6 +20,7 @@ export * from "./scheduling/score";
 export * from "./scheduling/slots";
 export * from "./scheduling/runs";
 export * from "./playbooks";
+export * from "./dispatch/trade-match";
 export * from "./money/payment-plan";
 export * from "./money/funding";
 export * from "./depreciation/estimate";

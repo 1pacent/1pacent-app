@@ -132,6 +132,25 @@ export async function acceptOfferAction(token: string, quoteId: string) {
   return result;
 }
 
+/** Quote-race invites (v8 R8.1): the tradie names a price from their seat. */
+export async function submitOfferQuoteAction(
+  token: string,
+  quoteId: string,
+  input: { quoteCents: number; callOutFeeCents?: number; note?: string },
+) {
+  const data = await getData();
+  const result = await data.submitOfferQuote(token, quoteId, {
+    quoteCents: input.quoteCents,
+    callOutFeeCents: input.callOutFeeCents ?? 0,
+    note: input.note,
+  });
+  if (result.ok) {
+    await poke(tradeTopic());
+    await poke(jobTopic(result.requestId));
+  }
+  return result;
+}
+
 export async function setOnlineAction(token: string, online: boolean, geo?: { lat: number; lng: number } | null) {
   const result = await (await getData()).setTradiePresence(token, online, geo ?? null);
   await poke(tradeTopic());
