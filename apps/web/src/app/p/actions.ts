@@ -52,7 +52,7 @@ export async function triagePreviewAction(
     return { ok: false, error: "llm_off" };
   }
   try {
-    const client = aiClient(); // Hermes-first (hermes-1pacent), OpenRouter fallback
+    const client = aiClient();
     const { triage, aiMeta } = await triageIntake({
       client,
       model: TRIAGE_MODEL,

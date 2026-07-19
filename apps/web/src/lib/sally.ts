@@ -32,7 +32,6 @@ const EMBEDDING_MODEL = process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-e
 const MIN_CONFIDENCE_FOR_PRICE_BAND = 0.4;
 
 function requireOpenRouterClient(): OpenRouterClient {
-  // Hermes-first (hermes-1pacent / Felix's runtime), OpenRouter fallback.
   return aiClient();
 }
 

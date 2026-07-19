@@ -245,12 +245,22 @@ only shared service between the two projects remains the one n8n.
   Telegram seam ready — `TELEGRAM_BOT_TOKEN` empty until operator supplies
   the bot token.
 
-**App integration** — `apps/web/src/lib/ai.ts` (`aiClient()`): a
-Hermes-first client that sends chatCompletion/chatWithTools to
-`$HERMES_URL/v1/chat/completions` (Bearer `$HERMES_API_KEY`) and falls back
-to direct OpenRouter on any failure; embeddings always go direct. Swapped in
-at the three construction sites: `lib/sally.ts`, `lib/sallyTradie.ts`,
-`app/p/actions.ts` (triage). Env: `HERMES_URL=https://api.1pacent.com/hermes`,
-`HERMES_API_KEY`, `HERMES_OPENAI_COMPAT=1`, `HERMES_AGENT=felix` — set on
-VPS `.env` and Vercel production. Without those vars the app behaves exactly
-as before (direct OpenRouter).
+**App integration** — two AI seams, deliberately separate
+(`apps/web/src/lib/ai.ts`):
+- `aiClient()` — the raw model, direct OpenRouter. Sally, triage, and every
+  extraction pipeline use this (now the single construction point for
+  `OpenRouterClient` in the app: `lib/sally.ts`, `lib/sallyTradie.ts`,
+  `app/p/actions.ts`). We first tried routing these through the Hermes
+  gateway and it broke live triage with a ZodError — the agent's
+  persona/context contaminated structured outputs ("plumbing" instead of the
+  enum "plumbing_general") — so pipelines hit the bare model by design.
+- `askFelix()` + `POST /api/felix` + `<FelixWidget/>` — the concierge. A
+  floating "Ask Felix" chat on every persona page (`app/p/layout.tsx`) and
+  the marketing site, persona-tagged from the path, relaying the transcript
+  server-side to the hermes-1pacent gateway. Honest 501 when unconfigured;
+  502 with an email fallback (fixitfelix@agentmail.to) when the gateway is
+  down.
+
+Env: `HERMES_URL=https://api.1pacent.com/hermes`, `HERMES_API_KEY`,
+`HERMES_OPENAI_COMPAT=1`, `HERMES_AGENT=felix` — set on VPS `.env` and
+Vercel production. Without them the app runs exactly as before, minus Felix.
