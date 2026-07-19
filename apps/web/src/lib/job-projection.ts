@@ -109,6 +109,9 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
     quote_race: "Competitive quotes, ranked on trust, price and speed — the recommended pick is the network's honest read.",
   };
   const basis = basisByModel[playbook.pricing.model] ?? null;
+  // v8 R6: captured-but-not-transferred = trust was short; the owner can
+  // fund it now. Occupants never see money mechanics.
+  const awaitingFunding = source.payment?.status === "captured";
 
   // Money visibility is a structural rule, not copy.
   let money: JobProjection["money"];
@@ -120,6 +123,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
       status: "none",
       label: "Quoted job — price on acceptance",
       basis: viewer === "occupant" ? null : basis,
+      awaitingFunding: false,
     };
   } else if (viewer === "tradie") {
     money = {
@@ -134,6 +138,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
             ? "Captured — payout on the way"
             : "Your payout, locked at booking",
       basis,
+      awaitingFunding,
     };
   } else if (viewer === "occupant") {
     money = {
@@ -143,6 +148,7 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
       status: source.payment.status,
       label: "No cost to you — covered by your rental provider",
       basis: null,
+      awaitingFunding: false,
     };
   } else {
     money = {
@@ -153,10 +159,13 @@ export function projectJob(source: JobSource, viewer: JobViewer): JobProjection 
       label:
         source.payment.status === "authorized"
           ? "Authorized — charged only when you say it's done"
-          : source.payment.status === "captured" || source.payment.status === "transferred"
-            ? "Charged on your verification"
-            : "Authorization released",
+          : source.payment.status === "captured"
+            ? "Verified — awaiting funding (rent not landed)"
+            : source.payment.status === "transferred"
+              ? "Charged on your verification"
+              : "Authorization released",
       basis,
+      awaitingFunding,
     };
   }
 

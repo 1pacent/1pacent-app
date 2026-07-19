@@ -569,6 +569,8 @@ export interface JobProjection {
     label: string;
     /** How this price was set — the payer's best-deal transparency line. */
     basis: string | null;
+    /** v8 R6: trust balance was short — the owner can pay now (one tap). */
+    awaitingFunding: boolean;
   };
   slot: { startAt: string; endAt: string; label: string } | null;
   onTheWayAt: string | null;
@@ -636,7 +638,7 @@ export type MomentRole = "payer" | "occupant" | "assigned_tradie" | "tradie_offe
 
 /** The decisions a one-tap signed action can carry. The token names exactly
  * one decision for one human; it burns on use. */
-export type MomentActionKind = "approve_request" | "verify_job" | "decide_variance";
+export type MomentActionKind = "approve_request" | "verify_job" | "decide_variance" | "fund_job";
 
 export interface AutopilotView {
   enabled: boolean;
@@ -878,7 +880,10 @@ export interface DataSource {
   ): Promise<{ ok: boolean; gatesRemaining?: string[]; error?: string }>;
   /** The payer/occupant verifies → capture + transfer (simulated PSP) + the
    * Address Record write (asset, warranty, certificate). One human tap. */
-  verifyAndSettle(token: string, requestId: string): Promise<{ ok: boolean; error?: string }>;
+  verifyAndSettle(
+    token: string,
+    requestId: string,
+  ): Promise<{ ok: boolean; error?: string; funding?: "payer_card" | "pm_trust" | "owner_handoff" }>;
 
   /** The shared Job Screen, projected for the viewer the token implies. */
   getJobProjection(token: string, requestId: string): Promise<JobProjection | null>;
@@ -994,6 +999,76 @@ export interface DataSource {
     assetId: string,
     input: { dataUrl: string; purchasedAt: string; warrantyMonths: number },
   ): Promise<{ ok: boolean; error?: string }>;
+
+  // ——— v8 R6: feedback, performance, same-day funding ———
+
+  /** One review per job, by the occupant or payer, after verification.
+   * Feeds the 70/30 accuracy/feedback trust score. */
+  submitReview(
+    token: string,
+    requestId: string,
+    input: { rating: number; comment?: string },
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  /** The business answers its feedback — once, on the record. */
+  respondToReview(
+    tradiePortalToken: string,
+    reviewId: string,
+    response: string,
+  ): Promise<{ ok: boolean; error?: string }>;
+
+  /** ONE performance shape, three persona projections (tradie business /
+   * PM portfolio / owner) — the commonality is the read model. */
+  getPerformance(token: string): Promise<PerformanceView | null>;
+
+  /** The owner pays a trust-short job now (card, simulated) — the tradie
+   * still gets same-day money. Also reachable as a one-tap fund_job Moment. */
+  fundJobNow(ownerToken: string, requestId: string): Promise<{ ok: boolean; error?: string }>;
+}
+
+/** ——— v8 R6: the shared performance read model ——— */
+
+export interface ReviewView {
+  id: string;
+  rating: number;
+  comment: string | null;
+  reviewerRole: "occupant" | "payer";
+  at: string;
+  response: string | null;
+  jobTitle: string;
+}
+
+export interface PerformanceView {
+  scope: "tradie" | "pm" | "owner";
+  heading: string;
+  tiles: Array<{ label: string; value: string; hint?: string }>;
+  jobsByStatus: Array<{ state: RequestState; count: number }>;
+  /** Who did what when — crew-attributed milestones, newest first. */
+  activity: Array<{ at: string; who: string; what: string; job: string }>;
+  partsUsed: Array<{ label: string; costCents: number | null; job: string; at: string }>;
+  /** Obligations still running (workmanship for tradies; coverage for payers). */
+  warranties: Array<{ assetLabel: string; until: string; property: string | null }>;
+  money: { quotedCents: number; invoicedCents: number; collectedCents: number; awaitingFundsCents: number };
+  /** Tradie scope only: the score, its inputs, and computed ways to move it. */
+  score: {
+    value: number;
+    avgAbsMoneyVariancePct: number | null;
+    avgAbsTimeVariancePct: number | null;
+    avgRating: number | null;
+    reviewCount: number;
+    tips: string[];
+  } | null;
+  reviews: ReviewView[];
+  /** PM/owner scopes: the consolidated view drills per property. */
+  perProperty: Array<{
+    propertyId: string;
+    address: string;
+    openJobs: number;
+    spend12moCents: number;
+    warranties: number;
+    compliance: "green" | "amber" | "red";
+    trustBalanceCents: number | null;
+  }> | null;
 }
 
 export type MintLinkResult = { ok: true; path: string } | { ok: false; error: string };

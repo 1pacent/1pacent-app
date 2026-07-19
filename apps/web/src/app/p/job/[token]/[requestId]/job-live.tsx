@@ -10,11 +10,13 @@ import {
   addJobPartAction,
   completeJobAction,
   decideVarianceAction,
+  fundJobNowAction,
   getJobAction,
   onMyWayAction,
   proposeVarianceAction,
   setAssetDetailsAction,
   startJobPulseAction,
+  submitReviewAction,
   verifySettleAction,
 } from "../../../actions";
 
@@ -50,6 +52,9 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
   const [assetModel, setAssetModel] = useState("");
   const [assetSerial, setAssetSerial] = useState("");
   const [assetSaved, setAssetSaved] = useState(false);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewComment, setReviewComment] = useState("");
+  const [reviewState, setReviewState] = useState<"idle" | "sent" | string>("idle");
   const [assetReceipt, setAssetReceipt] = useState<string | null>(null);
   const [assetPurchased, setAssetPurchased] = useState("");
   const [assetWarrantyMonths, setAssetWarrantyMonths] = useState("60");
@@ -549,10 +554,77 @@ export function JobLive({ token, initial }: { token: string; initial: JobProject
             Yes — it&apos;s fixed ✓
           </HiVisButton>
         )}
+        {/* v8 R6: trust short — the owner pays now, tradie still same-day. */}
+        {job.viewer === "payer" && job.money.awaitingFunding && (
+          <div className="hivis-ping-in rounded-2xl border border-amber-400/60 bg-field-900 p-4">
+            <p className="font-bold text-white">Rent hasn&apos;t landed — pay this one now?</p>
+            <p className="mt-1 text-xs text-white/50">
+              The property&apos;s trust balance is short{job.money.amountCents ? ` of ${dollars(job.money.amountCents)}` : ""}.
+              One tap pays by card; your tradie is still paid today. Or leave it for the month-end run.
+            </p>
+            <HiVisButton
+              breathe
+              disabled={pending}
+              onClick={() => act(() => fundJobNowAction(token, job.requestId))}
+            >
+              💳 Pay now{job.money.amountCents ? ` — ${dollars(job.money.amountCents)}` : ""}
+            </HiVisButton>
+          </div>
+        )}
+
         {job.viewer !== "tradie" && job.arcStep === "paid" && (
           <p className="rounded-2xl bg-mint-400/15 px-4 py-3 text-center text-sm font-bold text-mint-300">
             All done — written to the address record forever.
           </p>
+        )}
+        {/* v8 R6: feedback into the score — one review per job, post-verify. */}
+        {job.viewer !== "tradie" && job.arcStep === "paid" && reviewState !== "sent" && (
+          <div className="rounded-2xl border border-field-line bg-field-900 p-4">
+            <p className="text-sm font-bold text-white">How was it?</p>
+            <div className="mt-2 flex justify-center gap-1.5">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setReviewRating(n)}
+                  className={`text-3xl ${n <= reviewRating ? "text-hivis-400" : "text-white/20"}`}
+                  aria-label={`${n} star${n === 1 ? "" : "s"}`}
+                >
+                  ★
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="A sentence for the next customer (optional)"
+              value={reviewComment}
+              onChange={(e) => setReviewComment(e.target.value)}
+              className="mt-2 w-full rounded-xl border border-field-line bg-field-950 px-3 py-2.5 text-sm text-white placeholder:text-white/30"
+            />
+            <button
+              type="button"
+              disabled={pending || reviewRating === 0}
+              onClick={() => {
+                setReviewState("idle");
+                void submitReviewAction(token, job.requestId, {
+                  rating: reviewRating,
+                  comment: reviewComment.trim() || undefined,
+                }).then((r) => setReviewState(r.ok ? "sent" : (r.error ?? "Could not send.")));
+              }}
+              className="mt-3 w-full rounded-xl bg-hivis-400 px-4 py-2.5 text-sm font-bold text-field-950 active:scale-[0.97] disabled:opacity-50"
+            >
+              Send review
+            </button>
+            <p className="mt-1.5 text-center text-[10px] text-white/40">
+              Feeds the tradie&apos;s trust score (30% of it) — accuracy earns the other 70%.
+            </p>
+            {reviewState !== "idle" && reviewState !== "sent" && (
+              <p className="mt-1 text-center text-[10px] text-red-300">{reviewState}</p>
+            )}
+          </div>
+        )}
+        {reviewState === "sent" && (
+          <p className="text-center text-xs font-semibold text-mint-300">Review posted — thank you ✓</p>
         )}
       </div>
 

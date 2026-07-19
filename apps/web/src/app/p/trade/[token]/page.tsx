@@ -55,6 +55,12 @@ export default async function TradePage({ params }: { params: Promise<{ token: s
         }}
       />
       <div className="mt-4 flex flex-col gap-4">
+        <a
+          href={`/p/perf/${token}`}
+          className="rounded-2xl border border-field-line bg-field-900 px-4 py-3 text-sm font-semibold text-white/80 active:scale-[0.98]"
+        >
+          📈 My business — jobs, money, score, feedback →
+        </a>
         {run && <RunView run={run} />}
         {crew !== null && <CrewCard token={token} initial={crew} />}
         <FastPayCard token={token} initialEnabled={fastPay?.enabled ?? false} />

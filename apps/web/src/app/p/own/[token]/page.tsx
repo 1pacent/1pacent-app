@@ -74,6 +74,10 @@ export default async function OwnPage({ params }: { params: Promise<{ token: str
           )}
         </div>
 
+        <Link href={`/p/perf/${token}`} className="rounded-2xl border border-field-line bg-field-900 px-4 py-3 text-sm font-semibold text-white/80 active:scale-[0.98]">
+          📈 Performance — all properties →
+        </Link>
+
         {/* Autopilot — configure once, decide from the lock screen after. */}
         {autopilot && <AutopilotCard token={token} initial={autopilot} />}
         <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />

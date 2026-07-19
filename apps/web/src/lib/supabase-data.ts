@@ -36,8 +36,11 @@ import {
   computeTimeAccuracy,
   countsTowardQuoteAccuracy,
   countsTowardTimeAccuracy,
+  decideFunding,
   etaMinutesFromDistance,
   haversineKm,
+  scoreTips,
+  scoreTrustWithFeedback,
   validateQuoteSubmission,
   validateToken,
   varianceNeedsApproval,
@@ -94,6 +97,7 @@ import type {
   SpendingSummaryView,
   TradieAccuracyView,
   VarianceView,
+  PerformanceView,
   DispatchQuotesResult,
   IntakeContext,
   InvoiceJobInput,
@@ -1068,13 +1072,35 @@ export const supabaseData: DataSource = {
       a.sum += Math.abs(Number(row.invoice_cents) - Number(row.quote_cents)) / Number(row.quote_cents);
       a.n += 1;
     }
+    // Feedback joins the ranking signal (v8 R6). Consumers call
+    // scoreTrust(summary) = 100 − variance, so we fold the 70/30 blended
+    // score back into an EFFECTIVE variance (100 − blendedScore) — the
+    // consumer math stays untouched and every ranking sees feedback.
+    const { data: ratingRows } = await db
+      .from("job_reviews")
+      .select("tradie_contact_id, rating")
+      .in("tradie_contact_id", tradieContactIds);
+    const ratingAgg: Record<string, { sum: number; n: number }> = {};
+    for (const r of (ratingRows ?? []) as Array<{ tradie_contact_id: string; rating: number }>) {
+      (ratingAgg[r.tradie_contact_id] ??= { sum: 0, n: 0 });
+      ratingAgg[r.tradie_contact_id]!.sum += r.rating;
+      ratingAgg[r.tradie_contact_id]!.n += 1;
+    }
     const summaries: Record<string, { completedJobs: number; avgAbsVariancePct: number | null }> = {};
     for (const id of tradieContactIds) {
       const a = agg[id];
-      summaries[id] = {
-        completedJobs: a?.completed ?? 0,
-        avgAbsVariancePct: a && a.n > 0 ? (a.sum / a.n) * 100 : null,
-      };
+      const completedJobs = a?.completed ?? 0;
+      const rawVariance = a && a.n > 0 ? (a.sum / a.n) * 100 : null;
+      const fb = ratingAgg[id];
+      if (completedJobs >= 3 && rawVariance !== null && fb && fb.n > 0) {
+        const blended = scoreTrustWithFeedback(
+          { completedJobs, avgAbsVariancePct: rawVariance },
+          { avgRating: fb.sum / fb.n, reviewCount: fb.n },
+        );
+        summaries[id] = { completedJobs, avgAbsVariancePct: 100 - blended };
+      } else {
+        summaries[id] = { completedJobs, avgAbsVariancePct: rawVariance };
+      }
     }
     // v8 R3.5: blend the time signal in, so ranking and Autopilot's trust
     // floor see the whole picture (70% money / 30% time).
@@ -3420,6 +3446,17 @@ export const supabaseData: DataSource = {
       return result.ok ? { ok: true, label: "Verified — payment released", requestId } : { ok: false, error: result.error };
     }
 
+    if (payload.kind === "fund_job") {
+      const { data: req } = await db
+        .from("maintenance_requests")
+        .select("id, org_id, status")
+        .eq("id", requestId)
+        .maybeSingle();
+      if (!req) return { ok: false, error: "Request not found." };
+      const result = await fundJobCore(db, req, `moment:${row.id}`);
+      return result.ok ? { ok: true, label: "Paid — tradie gets it today", requestId } : { ok: false, error: result.error };
+    }
+
     if (payload.kind === "decide_variance") {
       if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
       const varianceId = (row.payload as { varianceId?: string } | null)?.varianceId;
@@ -3859,6 +3896,118 @@ export const supabaseData: DataSource = {
     return { ok: true };
   },
 
+  // ——— v8 R6: feedback, performance, same-day funding ———
+
+  async submitReview(token, requestId, input) {
+    const row = await resolveTokenAny(token, ["tenant_intake", "owner_portal"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const rating = Math.round(input.rating);
+    if (rating < 1 || rating > 5) return { ok: false, error: "Rating is 1 to 5 stars." };
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Job not found." };
+    if (row.scope === "tenant_intake") {
+      if (req.property_id !== row.aggregate_id) return { ok: false, error: "Job not found." };
+    } else {
+      const { data: prop } = await db.from("properties").select("owner_contact_id").eq("id", req.property_id).maybeSingle();
+      if (prop?.owner_contact_id !== row.aggregate_id) return { ok: false, error: "Job not found." };
+    }
+    if (!["verified", "invoiced", "paid", "closed"].includes(req.status as string)) {
+      return { ok: false, error: "Review after the job is verified." };
+    }
+    const { data: wo } = await db
+      .from("work_orders")
+      .select("id, tradie_contact_id")
+      .eq("request_id", req.id)
+      .maybeSingle();
+    if (!wo) return { ok: false, error: "Job not found." };
+    const { error } = await db.from("job_reviews").insert({
+      org_id: req.org_id,
+      request_id: req.id,
+      work_order_id: wo.id,
+      tradie_contact_id: wo.tradie_contact_id,
+      rating,
+      comment: input.comment?.trim().slice(0, 500) || null,
+      reviewer_role: row.scope === "tenant_intake" ? "occupant" : "payer",
+    });
+    if (error) {
+      if (error.code === "23505") return { ok: false, error: "This job already has a review." };
+      return { ok: false, error: error.message };
+    }
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: "review_submitted",
+      actor_type: row.scope === "tenant_intake" ? "tenant" : "landlord",
+      actor_id: `token:${row.id}`,
+      payload: { rating },
+    });
+    return { ok: true };
+  },
+
+  async respondToReview(tradiePortalToken, reviewId, response) {
+    const resolved = await resolveToken(tradiePortalToken, "tradie_portal");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const bizId = await tradieBusinessId(db, resolved.contact_id);
+    const { data: review } = await db
+      .from("job_reviews")
+      .select("id, org_id, tradie_contact_id, response")
+      .eq("id", reviewId)
+      .maybeSingle();
+    if (!review || review.tradie_contact_id !== bizId) return { ok: false, error: "Review not found." };
+    if (review.response) return { ok: false, error: "Already responded — one reply, on the record." };
+    const text = response.trim().slice(0, 500);
+    if (text.length < 2) return { ok: false, error: "Say something." };
+    await db
+      .from("job_reviews")
+      .update({ response: text, responded_at: new Date().toISOString() })
+      .eq("id", review.id);
+    return { ok: true };
+  },
+
+  async fundJobNow(ownerToken, requestId) {
+    const row = await resolveTokenAny(ownerToken, ["owner_portal"]);
+    if (!row) return { ok: false, error: "This link isn't active." };
+    const db = serviceClient();
+    const { data: req } = await db
+      .from("maintenance_requests")
+      .select("id, org_id, property_id, status")
+      .eq("id", requestId)
+      .maybeSingle();
+    if (!req) return { ok: false, error: "Job not found." };
+    const { data: prop } = await db.from("properties").select("owner_contact_id").eq("id", req.property_id).maybeSingle();
+    if (prop?.owner_contact_id !== row.aggregate_id) return { ok: false, error: "Job not found." };
+    return fundJobCore(db, req, `token:${row.id}`);
+  },
+
+  async getPerformance(token) {
+    const row = await resolveTokenAny(token, ["tradie_portal", "pm_portfolio", "owner_portal"]);
+    if (!row?.contact_id && row?.scope !== "owner_portal") return null;
+    if (!row) return null;
+    const db = serviceClient();
+    if (row.scope === "tradie_portal") {
+      return tradiePerformance(db, row.contact_id!);
+    }
+    const scope = row.scope === "pm_portfolio" ? ("pm" as const) : ("owner" as const);
+    const { data: props } =
+      scope === "pm"
+        ? await db
+            .from("properties")
+            .select("id, address_line1, suburb, pm_contact_id, trust_balance_cents")
+            .eq("pm_contact_id", row.contact_id)
+        : await db
+            .from("properties")
+            .select("id, address_line1, suburb, pm_contact_id, trust_balance_cents")
+            .eq("owner_contact_id", row.aggregate_id);
+    return portfolioPerformance(db, scope, (props ?? []) as Array<{ id: string; address_line1: string; suburb: string; pm_contact_id: string | null; trust_balance_cents: number }>);
+  },
+
   // ——— v8 R5b: crews ———
 
   async listCrew(tradiePortalToken) {
@@ -4122,6 +4271,254 @@ async function calendarBusyWindows(
   }
 }
 
+/** The tradie BUSINESS's performance page (v8 R6). */
+async function tradiePerformance(db: ReturnType<typeof serviceClient>, contactId: string) {
+  const bizId = await tradieBusinessId(db, contactId);
+  const { data: wos } = await db
+    .from("work_orders")
+    .select(
+      "id, status, quote_cents, call_out_fee_cents, invoice_cents, invoiced_at, on_the_way_at, actual_minutes, estimated_minutes, warranty_expires_at, assigned_staff_contact_id, created_at, maintenance_requests!work_orders_request_id_fkey(id, title, status, properties(address_line1, suburb))",
+    )
+    .eq("tradie_contact_id", bizId)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  const rows = (wos ?? []) as unknown as Array<{
+    id: string;
+    status: string;
+    quote_cents: number | null;
+    call_out_fee_cents: number | null;
+    invoice_cents: number | null;
+    invoiced_at: string | null;
+    on_the_way_at: string | null;
+    actual_minutes: number | null;
+    estimated_minutes: number | null;
+    warranty_expires_at: string | null;
+    assigned_staff_contact_id: string | null;
+    created_at: string;
+    maintenance_requests:
+      | { id: string; title: string; status: string; properties: { address_line1: string; suburb: string } | { address_line1: string; suburb: string }[] | null }
+      | null;
+  }>;
+  const reqOf = (w: (typeof rows)[number]) => (Array.isArray(w.maintenance_requests) ? w.maintenance_requests[0] : w.maintenance_requests);
+  const staffIds = [...new Set(rows.map((w) => w.assigned_staff_contact_id).filter(Boolean))] as string[];
+  const names = new Map<string, string>();
+  if (staffIds.length > 0) {
+    const { data: staff } = await db.from("contacts").select("id, full_name").in("id", staffIds);
+    for (const c of (staff ?? []) as Array<{ id: string; full_name: string }>) names.set(c.id, c.full_name);
+  }
+  const bizName = (await contactName(db, bizId)) ?? "You";
+
+  const byStatus = new Map<string, number>();
+  let quoted = 0, invoiced = 0;
+  const activity: Array<{ at: string; who: string; what: string; job: string }> = [];
+  const warranties: Array<{ assetLabel: string; until: string; property: string | null }> = [];
+  for (const w of rows) {
+    const req = reqOf(w);
+    const state = (req?.status ?? w.status) as string;
+    byStatus.set(state, (byStatus.get(state) ?? 0) + 1);
+    quoted += Number(w.quote_cents ?? 0) + Number(w.call_out_fee_cents ?? 0);
+    invoiced += Number(w.invoice_cents ?? 0);
+    const who = (w.assigned_staff_contact_id && names.get(w.assigned_staff_contact_id)) || bizName;
+    const prop = req ? (Array.isArray(req.properties) ? req.properties[0] : req.properties) : null;
+    const job = `${req?.title ?? "Job"}${prop ? ` @ ${prop.suburb}` : ""}`;
+    if (w.invoiced_at) {
+      activity.push({
+        at: w.invoiced_at,
+        who,
+        what: w.actual_minutes ? `finished (on site ${w.actual_minutes} min${w.estimated_minutes ? ` / est ${w.estimated_minutes}` : ""})` : "finished",
+        job,
+      });
+    } else if (w.on_the_way_at) activity.push({ at: w.on_the_way_at, who, what: "on the way", job });
+    else activity.push({ at: w.created_at, who, what: state.replace(/_/g, " "), job });
+    if (w.warranty_expires_at && new Date(w.warranty_expires_at) > new Date()) {
+      warranties.push({ assetLabel: job, until: w.warranty_expires_at, property: prop ? `${prop.address_line1}, ${prop.suburb}` : null });
+    }
+  }
+  const woIds = rows.map((w) => w.id);
+  let partsUsed: Array<{ label: string; costCents: number | null; job: string; at: string }> = [];
+  if (woIds.length > 0) {
+    const { data: parts } = await db
+      .from("job_parts")
+      .select("label, cost_cents, status, created_at, work_order_id")
+      .in("work_order_id", woIds)
+      .order("created_at", { ascending: false })
+      .limit(30);
+    partsUsed = ((parts ?? []) as Array<{ label: string; cost_cents: number; status: string; created_at: string; work_order_id: string }>)
+      .filter((pt) => pt.status === "active")
+      .map((pt) => {
+        const w = rows.find((x) => x.id === pt.work_order_id);
+        const req = w ? reqOf(w) : null;
+        return { label: pt.label, costCents: Number(pt.cost_cents), job: req?.title ?? "Job", at: pt.created_at };
+      });
+  }
+  const { data: payRows } = await db.from("payments").select("request_id, amount_cents, status");
+  const reqIds = new Set(rows.map((w) => reqOf(w)?.id).filter(Boolean));
+  let collected = 0, awaiting = 0;
+  for (const pm of (payRows ?? []) as Array<{ request_id: string; amount_cents: number; status: string }>) {
+    if (!reqIds.has(pm.request_id)) continue;
+    if (pm.status === "transferred") collected += Number(pm.amount_cents);
+    if (pm.status === "captured") awaiting += Number(pm.amount_cents);
+  }
+  const { data: reviewRows } = await db
+    .from("job_reviews")
+    .select("id, rating, comment, reviewer_role, response, created_at, maintenance_requests!job_reviews_request_id_fkey(title)")
+    .eq("tradie_contact_id", bizId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  const reviews = ((reviewRows ?? []) as unknown as Array<{
+    id: string; rating: number; comment: string | null; reviewer_role: string; response: string | null; created_at: string;
+    maintenance_requests: { title: string } | { title: string }[] | null;
+  }>).map((r) => ({
+    id: r.id,
+    rating: r.rating,
+    comment: r.comment,
+    reviewerRole: r.reviewer_role as "occupant" | "payer",
+    at: r.created_at,
+    response: r.response,
+    jobTitle: (Array.isArray(r.maintenance_requests) ? r.maintenance_requests[0]?.title : r.maintenance_requests?.title) ?? "Job",
+  }));
+  const avgRating = reviews.length > 0 ? reviews.reduce((sm, r) => sm + r.rating, 0) / reviews.length : null;
+  const acc = await supabaseData.getTradieAccuracy(""); // not token-callable here; compute inline below
+  void acc;
+  // accuracy inline (same fairness as getTradieAccuracy, business-level)
+  const priced = rows.filter((w) => w.invoice_cents !== null && (w.quote_cents ?? 0) > 0);
+  const moneyVars: number[] = [];
+  for (const w of priced) {
+    // playbook exclusion is already applied at score level in getTradieAccuracy;
+    // performance shows the raw pipeline, score uses the fair inputs below.
+    moneyVars.push(Math.abs(Number(w.invoice_cents) - Number(w.quote_cents)) / Number(w.quote_cents));
+  }
+  const timedRows = rows.filter((w) => w.actual_minutes != null && (w.estimated_minutes ?? 0) > 0);
+  const timeVars = timedRows.map((w) => computeTimeAccuracy(Number(w.estimated_minutes), Number(w.actual_minutes!)).absVariancePct);
+  const avgMoney = moneyVars.length ? (moneyVars.reduce((x, y) => x + y, 0) / moneyVars.length) * 100 : null;
+  const avgTime = timeVars.length ? timeVars.reduce((x, y) => x + y, 0) / timeVars.length : null;
+  const completedJobs = priced.length;
+  const scoreValue = scoreTrustWithFeedback(
+    { completedJobs, avgAbsVariancePct: blendedAccuracyPct(avgMoney, avgTime) },
+    { avgRating, reviewCount: reviews.length },
+  );
+  const openCount = [...byStatus.entries()].filter(([st]) => !["paid", "closed", "cancelled", "declined"].includes(st)).reduce((sm, [, c]) => sm + c, 0);
+  return {
+    scope: "tradie" as const,
+    heading: `${bizName} — business performance`,
+    tiles: [
+      { label: "Jobs on the books", value: String(rows.length), hint: `${openCount} live` },
+      { label: "Collected", value: `$${Math.round(collected / 100).toLocaleString("en-AU")}` },
+      { label: "Trust score", value: String(scoreValue), hint: avgRating ? `★ ${avgRating.toFixed(1)} (${reviews.length})` : "no reviews yet" },
+      { label: "Warranty obligations", value: String(warranties.length), hint: "live workmanship promises" },
+    ],
+    jobsByStatus: [...byStatus.entries()].map(([state, count]) => ({ state: state as RequestState, count })),
+    activity: activity.sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).slice(0, 20),
+    partsUsed,
+    warranties,
+    money: { quotedCents: quoted, invoicedCents: invoiced, collectedCents: collected, awaitingFundsCents: awaiting },
+    score: {
+      value: scoreValue,
+      avgAbsMoneyVariancePct: avgMoney,
+      avgAbsTimeVariancePct: avgTime,
+      avgRating,
+      reviewCount: reviews.length,
+      tips: scoreTips({ avgAbsMoneyVariancePct: avgMoney, avgAbsTimeVariancePct: avgTime, avgRating, completedJobs }),
+    },
+    reviews,
+    perProperty: null,
+  };
+}
+
+/** PM portfolio / owner performance — same shape, property-drilled. */
+async function portfolioPerformance(
+  db: ReturnType<typeof serviceClient>,
+  scope: "pm" | "owner",
+  props: Array<{ id: string; address_line1: string; suburb: string; pm_contact_id: string | null; trust_balance_cents: number }>,
+) {
+  const propertyIds = props.map((pp) => pp.id);
+  const { data: reqs } = propertyIds.length
+    ? await db
+        .from("maintenance_requests")
+        .select("id, title, status, property_id, reported_at")
+        .in("property_id", propertyIds)
+        .order("reported_at", { ascending: false })
+        .limit(300)
+    : { data: [] };
+  const reqRows = (reqs ?? []) as Array<{ id: string; title: string; status: string; property_id: string; reported_at: string }>;
+  const { data: pays } = await db.from("payments").select("request_id, amount_cents, status");
+  const payRows = (pays ?? []) as Array<{ request_id: string; amount_cents: number; status: string }>;
+  const reqIdSet = new Set(reqRows.map((r) => r.id));
+  let collected = 0, awaiting = 0, invoicedTotal = 0;
+  for (const pm of payRows) {
+    if (!reqIdSet.has(pm.request_id)) continue;
+    if (pm.status === "transferred") collected += Number(pm.amount_cents);
+    if (pm.status === "captured") awaiting += Number(pm.amount_cents);
+  }
+  const byStatus = new Map<string, number>();
+  const OPEN = new Set(["reported", "triaged", "pending_approval", "approved", "quoting", "scheduled", "in_progress", "evidence_pending"]);
+  const activity: Array<{ at: string; who: string; what: string; job: string }> = [];
+  const addrOf = new Map(props.map((pp) => [pp.id, `${pp.address_line1}, ${pp.suburb}`]));
+  for (const r of reqRows) {
+    byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
+    if (activity.length < 20) {
+      activity.push({ at: r.reported_at, who: addrOf.get(r.property_id) ?? "", what: r.status.replace(/_/g, " "), job: r.title });
+    }
+  }
+  const { data: woRows } = propertyIds.length
+    ? await db
+        .from("work_orders")
+        .select("invoice_cents, warranty_expires_at, request_id, contacts(full_name)")
+        .not("invoice_cents", "is", null)
+    : { data: [] };
+  const warranties: Array<{ assetLabel: string; until: string; property: string | null }> = [];
+  for (const w of (woRows ?? []) as Array<{ invoice_cents: number | null; warranty_expires_at: string | null; request_id: string; contacts: { full_name: string } | { full_name: string }[] | null }>) {
+    if (!reqIdSet.has(w.request_id)) continue;
+    invoicedTotal += Number(w.invoice_cents ?? 0);
+    if (w.warranty_expires_at && new Date(w.warranty_expires_at) > new Date()) {
+      const req = reqRows.find((r) => r.id === w.request_id);
+      const tradie = Array.isArray(w.contacts) ? w.contacts[0] : w.contacts;
+      warranties.push({
+        assetLabel: `${req?.title ?? "Job"}${tradie ? ` — ${tradie.full_name}` : ""}`,
+        until: w.warranty_expires_at,
+        property: req ? (addrOf.get(req.property_id) ?? null) : null,
+      });
+    }
+  }
+  const perProperty = [] as NonNullable<PerformanceView["perProperty"]>;
+  for (const pp of props) {
+    const propReqs = reqRows.filter((r) => r.property_id === pp.id);
+    const spend = await spendingForProperties(db, [pp.id], 12);
+    const detail = await supabaseData.getProperty(pp.id);
+    perProperty.push({
+      propertyId: pp.id,
+      address: `${pp.address_line1}, ${pp.suburb}`,
+      openJobs: propReqs.filter((r) => OPEN.has(r.status)).length,
+      spend12moCents: spend.totalCents,
+      warranties: warranties.filter((w) => w.property === `${pp.address_line1}, ${pp.suburb}`).length,
+      compliance: detail?.compliance.overall ?? "amber",
+      trustBalanceCents: scope === "pm" ? Number(pp.trust_balance_cents) : null,
+    });
+  }
+  return {
+    scope,
+    heading: scope === "pm" ? "Portfolio performance" : "Your properties — performance",
+    tiles: [
+      { label: "Properties", value: String(props.length) },
+      { label: "Open jobs", value: String(reqRows.filter((r) => OPEN.has(r.status)).length) },
+      { label: "Maintained (12mo)", value: `$${Math.round(perProperty.reduce((sm, x) => sm + x.spend12moCents, 0) / 100).toLocaleString("en-AU")}` },
+      {
+        label: "Awaiting funds",
+        value: `$${Math.round(awaiting / 100).toLocaleString("en-AU")}`,
+        hint: awaiting > 0 ? "trust short — owner can pay now" : "all settled same-day",
+      },
+    ],
+    jobsByStatus: [...byStatus.entries()].map(([state, count]) => ({ state: state as RequestState, count })),
+    activity,
+    partsUsed: [],
+    warranties,
+    money: { quotedCents: 0, invoicedCents: invoicedTotal, collectedCents: collected, awaitingFundsCents: awaiting },
+    score: null,
+    reviews: [],
+    perProperty,
+  };
+}
+
 interface VerifiableRequestRow {
   id: string;
   org_id: string;
@@ -4140,7 +4537,7 @@ async function verifySettleCore(
   db: ReturnType<typeof serviceClient>,
   req: VerifiableRequestRow,
   actor: { actorType: ActorType; actorId: string },
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; funding?: "payer_card" | "pm_trust" | "owner_handoff" }> {
   const verifyResult = transition(req.status as RequestState, "verify", actor.actorType);
   if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${req.status}".` };
   const base = { org_id: req.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
@@ -4268,10 +4665,26 @@ async function verifySettleCore(
     })
     .eq("id", wo.id);
 
+  let fundingOutcome: "payer_card" | "pm_trust" | "owner_handoff" | null = null;
   if (openSlices.length > 0) {
     const psp = resolvePsp();
     const fastPay = await tradieFastPayEnabled(db, wo.tradie_contact_id as string | null);
     const split = splitPaymentWithFastPay(settleAmount, fastPay);
+    // The same-day funding ladder (v8 R6): who pays NOW is decided
+    // deterministically — owner-occupier card, PM trust balance, or a
+    // hand-off to the owner when rent hasn't landed.
+    const { data: fundProp } = await db
+      .from("properties")
+      .select("id, pm_contact_id, trust_balance_cents")
+      .eq("id", req.property_id)
+      .maybeSingle();
+    const funding = decideFunding({
+      pmManaged: Boolean(fundProp?.pm_contact_id),
+      trustBalanceCents: fundProp?.trust_balance_cents != null ? Number(fundProp.trust_balance_cents) : null,
+      amountCents: settleAmount,
+    });
+    fundingOutcome = funding.source === "awaiting_funds" ? "owner_handoff" : funding.source;
+    const transferNow = funding.source !== "owner_handoff";
     for (const slice of openSlices) {
       if (slice.status !== "authorized") continue; // deposit already settled at confirmation
       if (slice.psp_ref) {
@@ -4283,19 +4696,36 @@ async function verifySettleCore(
           continue;
         }
       }
-      const transferred = slice.psp_ref
-        ? await psp.transfer({ amountCents: Number(slice.amount_cents), description: `1Pacent job ${req.id}`, destination: null })
-        : { ok: psp.name === "simulated" };
+      const transferred = transferNow
+        ? slice.psp_ref
+          ? await psp.transfer({ amountCents: Number(slice.amount_cents), description: `1Pacent job ${req.id}`, destination: null })
+          : { ok: psp.name === "simulated" }
+        : { ok: false };
       await db
         .from("payments")
         .update({
-          status: transferred.ok || psp.name === "simulated" ? "transferred" : "captured",
+          status: transferNow && (transferred.ok || psp.name === "simulated") ? "transferred" : "captured",
           work_order_id: wo.id,
           fastpay_fee_cents: fastPay ? split.fastPayFeeCents : null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", slice.id);
     }
+    if (funding.source === "pm_trust" && fundProp) {
+      await db
+        .from("properties")
+        .update({ trust_balance_cents: funding.trustBalanceAfterCents })
+        .eq("id", fundProp.id);
+    }
+    await db.from("events").insert({
+      org_id: req.org_id,
+      aggregate_type: "work_order",
+      aggregate_id: wo.id,
+      event_type: funding.source === "owner_handoff" ? "funding_handoff" : "funding_decided",
+      actor_type: "system",
+      actor_id: "penny:funding",
+      payload: { source: funding.source, note: funding.note, amountCents: settleAmount },
+    });
     await db.from("events").insert({
       org_id: req.org_id,
       aggregate_type: "work_order",
@@ -4314,6 +4744,9 @@ async function verifySettleCore(
     });
   }
 
+  // A handed-off job stops at "invoiced" — record_payment/close land when
+  // the owner funds it (fundJobCore) or the month-end run does.
+  if (fundingOutcome === "owner_handoff") return { ok: true, funding: "owner_handoff" as const };
   const paidResult = transition(invoiceResult.state, "record_payment", "system");
   const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
   const trailing: Array<Record<string, unknown>> = [];
@@ -4323,6 +4756,47 @@ async function verifySettleCore(
   const finalState = closedResult?.ok ? closedResult.state : invoiceResult.state;
   await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
   await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
+  return { ok: true, funding: fundingOutcome ?? undefined };
+}
+
+/** The owner pays a trust-short job NOW (simulated card): captured slices
+ * transfer, the state machine finishes, funded_by_owner hits the ledger. */
+async function fundJobCore(
+  db: ReturnType<typeof serviceClient>,
+  req: { id: string; org_id: string; status: string },
+  actorId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const { data: slices } = await db
+    .from("payments")
+    .select("id, amount_cents, status")
+    .eq("request_id", req.id)
+    .eq("status", "captured");
+  const rows = (slices ?? []) as Array<{ id: string; amount_cents: number }>;
+  if (rows.length === 0) return { ok: false, error: "Nothing awaiting funding on this job." };
+  for (const slice of rows) {
+    await db.from("payments").update({ status: "transferred", updated_at: new Date().toISOString() }).eq("id", slice.id);
+  }
+  const total = rows.reduce((sum, r) => sum + Number(r.amount_cents), 0);
+  const { data: wo } = await db.from("work_orders").select("id").eq("request_id", req.id).maybeSingle();
+  await db.from("events").insert({
+    org_id: req.org_id,
+    aggregate_type: "work_order",
+    aggregate_id: wo?.id ?? req.id,
+    event_type: "funded_by_owner",
+    actor_type: "landlord",
+    actor_id: actorId,
+    payload: { amountCents: total, note: "Owner paid now — tradie same-day; PM trust untouched." },
+  });
+  const base = { org_id: req.org_id, aggregate_type: "maintenance_request", aggregate_id: req.id };
+  const paid = transition(req.status as RequestState, "record_payment", "system");
+  if (paid.ok) {
+    await db.from("events").insert({ ...base, event_type: "record_payment", actor_type: "system", actor_id: "penny:psp" });
+    const closed = transition(paid.state, "close", "system");
+    const finalState = closed.ok ? closed.state : paid.state;
+    if (closed.ok) await db.from("events").insert({ ...base, event_type: "close", actor_type: "system", actor_id: "penny:psp" });
+    await db.from("maintenance_requests").update({ status: finalState }).eq("id", req.id);
+    if (wo) await db.from("work_orders").update({ status: finalState }).eq("id", wo.id);
+  }
   return { ok: true };
 }
 

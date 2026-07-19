@@ -39,8 +39,11 @@ import {
   computeTimeAccuracy,
   countsTowardQuoteAccuracy,
   countsTowardTimeAccuracy,
+  decideFunding,
   etaMinutesFromDistance,
   haversineKm,
+  scoreTips,
+  scoreTrustWithFeedback,
   paymentScheduleFor,
   splitPaymentWithFastPay,
   varianceNeedsApproval,
@@ -71,6 +74,8 @@ import type {
   MomentRole,
   PushSubscriptionInput,
   PushTarget,
+  PerformanceView,
+  ReviewView,
   TradieRunView,
   AutoQuoteSettingsView,
   CanvasCard,
@@ -141,6 +146,8 @@ export interface DemoProperty {
   /** v8 R5a: coordinates (nearest verified address) — George's ETA fuel. */
   lat?: number;
   lng?: number;
+  /** v8 R6: rent held by the PM — the same-day funding ladder reads it. */
+  trustBalanceCents?: number;
 }
 
 export interface DemoRequestEventRow {
@@ -174,6 +181,7 @@ const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 const properties: DemoProperty[] = [
   {
     id: "prop-fitzroy",
+    trustBalanceCents: 120_000,
     lat: -37.795576,
     lng: 144.975952,
     address: "12 Rose Street",
@@ -192,6 +200,7 @@ const properties: DemoProperty[] = [
   },
   {
     id: "prop-richmond",
+    trustBalanceCents: 5_000, // rent not landed — the handoff demo
     lat: -37.825027,
     lng: 144.990581,
     address: "8/44 Swan Street",
@@ -2610,6 +2619,13 @@ export const demoData: DataSource = {
       return result.ok ? { ok: true, label: "Verified — payment released", requestId } : { ok: false, error: result.error };
     }
 
+    if (kind === "fund_job") {
+      const request = requests.find((r) => r.id === requestId);
+      if (!request) return { ok: false, error: "Request not found." };
+      const result = demoFundJob(request, `moment:${rawToken.slice(0, 12)}`);
+      return result.ok ? { ok: true, label: "Paid — tradie gets it today", requestId } : { ok: false, error: result.error };
+    }
+
     if (kind === "decide_variance") {
       if (choice !== "approve" && choice !== "decline") return { ok: false, error: "Unknown choice." };
       const varianceId = resolved.payload?.varianceId;
@@ -2901,6 +2917,78 @@ export const demoData: DataSource = {
     return { ok: true };
   },
 
+  // ——— v8 R6: feedback, performance, same-day funding ———
+
+  async submitReview(token, requestId, input) {
+    const resolved = resolveDemoToken(token);
+    if (!resolved || !["tenant_intake", "owner_portal"].includes(resolved.scope)) {
+      return { ok: false, error: "This link isn't active." };
+    }
+    const rating = Math.round(input.rating);
+    if (rating < 1 || rating > 5) return { ok: false, error: "Rating is 1 to 5 stars." };
+    const request = requests.find((r) => r.id === requestId);
+    if (!request) return { ok: false, error: "Job not found." };
+    const inScope =
+      resolved.scope === "tenant_intake"
+        ? request.propertyId === resolved.aggregateId
+        : properties.some((pp) => pp.id === request.propertyId && pp.ownerContactId === resolved.aggregateId);
+    if (!inScope) return { ok: false, error: "Job not found." };
+    if (!["verified", "invoiced", "paid", "closed"].includes(requestState(request))) {
+      return { ok: false, error: "Review after the job is verified." };
+    }
+    if (demoReviews.some((rv) => rv.requestId === requestId)) return { ok: false, error: "This job already has a review." };
+    const wo = workOrders.find((w) => w.requestId === requestId);
+    if (!wo) return { ok: false, error: "Job not found." };
+    demoReviews.push({
+      id: `rev-${++demoReviewSeq}`,
+      requestId,
+      tradieContactId: wo.tradieContactId,
+      rating,
+      comment: input.comment?.trim().slice(0, 500) || null,
+      reviewerRole: resolved.scope === "tenant_intake" ? "occupant" : "payer",
+      response: null,
+      createdAt: new Date().toISOString(),
+    });
+    return { ok: true };
+  },
+
+  async respondToReview(tradiePortalToken, reviewId, response) {
+    const resolved = resolveDemoToken(tradiePortalToken);
+    if (resolved?.scope !== "tradie_portal" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const review = demoReviews.find((rv) => rv.id === reviewId);
+    if (!review || review.tradieContactId !== demoBizId(resolved.contactId)) return { ok: false, error: "Review not found." };
+    if (review.response) return { ok: false, error: "Already responded — one reply, on the record." };
+    const text = response.trim().slice(0, 500);
+    if (text.length < 2) return { ok: false, error: "Say something." };
+    review.response = text;
+    return { ok: true };
+  },
+
+  async fundJobNow(ownerToken, requestId) {
+    const resolved = resolveDemoToken(ownerToken);
+    if (resolved?.scope !== "owner_portal") return { ok: false, error: "This link isn't active." };
+    const request = requests.find((r) => r.id === requestId);
+    if (!request || !properties.some((pp) => pp.id === request.propertyId && pp.ownerContactId === resolved.aggregateId)) {
+      return { ok: false, error: "Job not found." };
+    }
+    return demoFundJob(request, `token:${ownerToken.slice(0, 12)}`);
+  },
+
+  async getPerformance(token) {
+    const resolved = resolveDemoToken(token);
+    if (!resolved) return null;
+    if (resolved.scope === "tradie_portal" && resolved.contactId) {
+      return demoTradiePerformance(demoBizId(resolved.contactId));
+    }
+    if (resolved.scope === "pm_portfolio" && resolved.contactId) {
+      return demoPortfolioPerformance("pm", properties.filter((pp) => pp.pmContactId === resolved.contactId));
+    }
+    if (resolved.scope === "owner_portal") {
+      return demoPortfolioPerformance("owner", properties.filter((pp) => pp.ownerContactId === resolved.aggregateId));
+    }
+    return null;
+  },
+
   // ——— v8 R5b: crews ———
 
   async listCrew(tradiePortalToken) {
@@ -3068,7 +3156,7 @@ export function demoAdminOverview() {
 function demoVerifySettle(
   request: DemoRequest,
   actor: { actorType: "tenant" | "agency_user"; actorId: string },
-): { ok: true } | { ok: false; error: string } {
+): { ok: true; funding?: "owner_handoff" } | { ok: false; error: string } {
   const current = requestState(request);
   const verifyResult = transition(current, "verify", actor.actorType);
   if (!verifyResult.ok) return { ok: false, error: `Cannot verify from state "${current}".` };
@@ -3141,12 +3229,28 @@ function demoVerifySettle(
 
     const fastPay = Boolean(fastPayByTradie[wo.tradieContactId]);
     const split = splitPaymentWithFastPay(settleAmount, fastPay);
+    // The same-day funding ladder (v8 R6) — parity with verifySettleCore.
+    const fundProp = properties.find((pp) => pp.id === request.propertyId);
+    const funding = decideFunding({
+      pmManaged: Boolean(fundProp?.pmContactId),
+      trustBalanceCents: fundProp?.trustBalanceCents ?? null,
+      amountCents: settleAmount,
+    });
+    const transferNow = funding.source !== "owner_handoff";
     for (const slice of openSlices) {
       if (slice.status !== "authorized") continue; // deposits settled at confirmation
-      slice.status = "transferred"; // simulated PSP: capture + same-day payout
+      slice.status = transferNow ? "transferred" : "captured";
       slice.workOrderId = wo.id;
       slice.fastpayFeeCents = fastPay ? split.fastPayFeeCents : null;
     }
+    if (funding.source === "pm_trust" && fundProp) fundProp.trustBalanceCents = funding.trustBalanceAfterCents;
+    demoWorkOrderEvents.push({
+      workOrderId: wo.id,
+      eventType: funding.source === "owner_handoff" ? "funding_handoff" : "funding_decided",
+      at: now,
+      note: funding.note,
+    });
+    if (funding.source === "owner_handoff") return { ok: true, funding: "owner_handoff" };
 
     const paidResult = transition(invoiceResult.state, "record_payment", "system");
     const closedResult = paidResult.ok ? transition(paidResult.state, "close", "system") : null;
@@ -3155,6 +3259,192 @@ function demoVerifySettle(
     wo.status = closedResult?.ok ? closedResult.state : invoiceResult.state;
   }
   return { ok: true };
+}
+
+/** Owner pays a trust-short job now (v8 R6) — parity: fundJobCore. */
+function demoFundJob(request: DemoRequest, actorId: string): { ok: true } | { ok: false; error: string } {
+  const captured = payments.filter((pm) => pm.requestId === request.id && pm.status === "captured");
+  if (captured.length === 0) return { ok: false, error: "Nothing awaiting funding on this job." };
+  for (const slice of captured) slice.status = "transferred";
+  const wo = workOrders.find((w) => w.requestId === request.id);
+  demoWorkOrderEvents.push({
+    workOrderId: wo?.id ?? request.id,
+    eventType: "funded_by_owner",
+    at: new Date().toISOString(),
+    note: `Owner paid now (${actorId}) — tradie same-day; PM trust untouched.`,
+  });
+  const now = new Date().toISOString();
+  const paid = transition(requestState(request), "record_payment", "system");
+  if (paid.ok) {
+    request.events.push({ eventType: "record_payment", actorType: "system", actorId: "penny:psp", at: now });
+    const closed = transition(paid.state, "close", "system");
+    if (closed.ok) request.events.push({ eventType: "close", actorType: "system", actorId: "penny:psp", at: now });
+    if (wo) wo.status = closed.ok ? closed.state : paid.state;
+  }
+  return { ok: true };
+}
+
+/** Tradie business performance (v8 R6) — parity: tradiePerformance. */
+function demoTradiePerformance(bizId: string): PerformanceView {
+  const bizName = contacts.find((c) => c.id === bizId)?.fullName ?? "You";
+  const wos = workOrders.filter((w) => w.tradieContactId === bizId);
+  const byStatus = new Map<string, number>();
+  let quoted = 0, invoiced = 0, collected = 0, awaiting = 0;
+  const activity: PerformanceView["activity"] = [];
+  const warranties: PerformanceView["warranties"] = [];
+  for (const w of wos) {
+    const request = requests.find((r) => r.id === w.requestId);
+    if (!request) continue;
+    const state = requestState(request);
+    byStatus.set(state, (byStatus.get(state) ?? 0) + 1);
+    quoted += (w.quoteCents ?? 0) + (w.callOutFeeCents ?? 0);
+    invoiced += w.invoiceCents ?? 0;
+    const who = (w.assignedStaffContactId && contacts.find((c) => c.id === w.assignedStaffContactId)?.fullName) || bizName;
+    const property = properties.find((pp) => pp.id === request.propertyId);
+    const job = `${request.title}${property ? ` @ ${property.suburb}` : ""}`;
+    activity.push({
+      at: w.invoicedAt ?? w.onTheWayAt ?? request.reportedAt,
+      who,
+      what: w.invoicedAt
+        ? `finished${w.actualMinutes ? ` (on site ${w.actualMinutes} min${w.estimatedMinutes ? ` / est ${w.estimatedMinutes}` : ""})` : ""}`
+        : state.replace(/_/g, " "),
+      job,
+    });
+    if (w.warrantyExpiresAt && new Date(w.warrantyExpiresAt) > new Date()) {
+      warranties.push({ assetLabel: job, until: w.warrantyExpiresAt, property: property ? `${property.address}, ${property.suburb}` : null });
+    }
+  }
+  const reqIds = new Set(wos.map((w) => w.requestId));
+  for (const pm of payments) {
+    if (!reqIds.has(pm.requestId)) continue;
+    if (pm.status === "transferred") collected += pm.amountCents;
+    if (pm.status === "captured") awaiting += pm.amountCents;
+  }
+  const partsUsed: PerformanceView["partsUsed"] = demoJobParts
+    .filter((pt) => pt.status === "active" && wos.some((w) => w.id === pt.workOrderId))
+    .map((pt) => {
+      const w = wos.find((x) => x.id === pt.workOrderId)!;
+      const request = requests.find((r) => r.id === w.requestId);
+      return { label: pt.label, costCents: pt.costCents, job: request?.title ?? "Job", at: new Date().toISOString() };
+    });
+  const reviews: ReviewView[] = demoReviews
+    .filter((rv) => rv.tradieContactId === bizId)
+    .map((rv) => ({
+      id: rv.id,
+      rating: rv.rating,
+      comment: rv.comment,
+      reviewerRole: rv.reviewerRole,
+      at: rv.createdAt,
+      response: rv.response,
+      jobTitle: requests.find((r) => r.id === rv.requestId)?.title ?? "Job",
+    }))
+    .reverse();
+  const avgRating = reviews.length ? reviews.reduce((sm, rv) => sm + rv.rating, 0) / reviews.length : null;
+  const acc = tradieAccuracyFor(bizId);
+  const scoreValue = scoreTrustWithFeedback(
+    { completedJobs: acc.completedJobs, avgAbsVariancePct: blendedAccuracyPct(acc.avgAbsVariancePct, acc.avgAbsTimeVariancePct) },
+    { avgRating, reviewCount: reviews.length },
+  );
+  const openCount = [...byStatus.entries()].filter(([st]) => !["paid", "closed", "cancelled", "declined"].includes(st)).reduce((sm, [, c]) => sm + c, 0);
+  return {
+    scope: "tradie",
+    heading: `${bizName} — business performance`,
+    tiles: [
+      { label: "Jobs on the books", value: String(wos.length), hint: `${openCount} live` },
+      { label: "Collected", value: `$${Math.round(collected / 100).toLocaleString("en-AU")}` },
+      { label: "Trust score", value: String(scoreValue), hint: avgRating ? `★ ${avgRating.toFixed(1)} (${reviews.length})` : "no reviews yet" },
+      { label: "Warranty obligations", value: String(warranties.length), hint: "live workmanship promises" },
+    ],
+    jobsByStatus: [...byStatus.entries()].map(([state, count]) => ({ state: state as RequestState, count })),
+    activity: activity.sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).slice(0, 20),
+    partsUsed,
+    warranties,
+    money: { quotedCents: quoted, invoicedCents: invoiced, collectedCents: collected, awaitingFundsCents: awaiting },
+    score: {
+      value: scoreValue,
+      avgAbsMoneyVariancePct: acc.avgAbsVariancePct,
+      avgAbsTimeVariancePct: acc.avgAbsTimeVariancePct,
+      avgRating,
+      reviewCount: reviews.length,
+      tips: scoreTips({
+        avgAbsMoneyVariancePct: acc.avgAbsVariancePct,
+        avgAbsTimeVariancePct: acc.avgAbsTimeVariancePct,
+        avgRating,
+        completedJobs: acc.completedJobs,
+      }),
+    },
+    reviews,
+    perProperty: null,
+  };
+}
+
+/** PM/owner portfolio performance (v8 R6) — parity: portfolioPerformance. */
+function demoPortfolioPerformance(scope: "pm" | "owner", scopeProps: DemoProperty[]): PerformanceView {
+  const OPEN = new Set(["reported", "triaged", "pending_approval", "approved", "quoting", "scheduled", "in_progress", "evidence_pending"]);
+  const propIds = new Set(scopeProps.map((pp) => pp.id));
+  const scopeReqs = requests.filter((r) => propIds.has(r.propertyId));
+  const reqIds = new Set(scopeReqs.map((r) => r.id));
+  let collected = 0, awaiting = 0, invoicedTotal = 0;
+  for (const pm of payments) {
+    if (!reqIds.has(pm.requestId)) continue;
+    if (pm.status === "transferred") collected += pm.amountCents;
+    if (pm.status === "captured") awaiting += pm.amountCents;
+  }
+  const byStatus = new Map<string, number>();
+  const activity: PerformanceView["activity"] = [];
+  const warranties: PerformanceView["warranties"] = [];
+  for (const r of [...scopeReqs].sort((x, y) => Date.parse(y.reportedAt) - Date.parse(x.reportedAt))) {
+    const state = requestState(r);
+    byStatus.set(state, (byStatus.get(state) ?? 0) + 1);
+    const property = scopeProps.find((pp) => pp.id === r.propertyId);
+    if (activity.length < 20) activity.push({ at: r.reportedAt, who: property ? `${property.address}` : "", what: state.replace(/_/g, " "), job: r.title });
+    const wo = workOrders.find((w) => w.requestId === r.id);
+    if (wo) {
+      invoicedTotal += wo.invoiceCents ?? 0;
+      if (wo.warrantyExpiresAt && new Date(wo.warrantyExpiresAt) > new Date()) {
+        const tradie = contacts.find((c) => c.id === wo.tradieContactId);
+        warranties.push({
+          assetLabel: `${r.title}${tradie ? ` — ${tradie.fullName}` : ""}`,
+          until: wo.warrantyExpiresAt,
+          property: property ? `${property.address}, ${property.suburb}` : null,
+        });
+      }
+    }
+  }
+  const perProperty = scopeProps.map((pp) => {
+    const propReqs = scopeReqs.filter((r) => r.propertyId === pp.id);
+    return {
+      propertyId: pp.id,
+      address: `${pp.address}, ${pp.suburb}`,
+      openJobs: propReqs.filter((r) => OPEN.has(requestState(r))).length,
+      spend12moCents: spendingForProperties([pp.id], 12).totalCents,
+      warranties: warranties.filter((w) => w.property === `${pp.address}, ${pp.suburb}`).length,
+      compliance: evaluateProperty(pp.profile, pp.evidence, new Date()).overall,
+      trustBalanceCents: scope === "pm" ? (pp.trustBalanceCents ?? 0) : null,
+    };
+  });
+  return {
+    scope,
+    heading: scope === "pm" ? "Portfolio performance" : "Your properties — performance",
+    tiles: [
+      { label: "Properties", value: String(scopeProps.length) },
+      { label: "Open jobs", value: String(scopeReqs.filter((r) => OPEN.has(requestState(r))).length) },
+      { label: "Maintained (12mo)", value: `$${Math.round(perProperty.reduce((sm, x) => sm + x.spend12moCents, 0) / 100).toLocaleString("en-AU")}` },
+      {
+        label: "Awaiting funds",
+        value: `$${Math.round(awaiting / 100).toLocaleString("en-AU")}`,
+        hint: awaiting > 0 ? "trust short — owner can pay now" : "all settled same-day",
+      },
+    ],
+    jobsByStatus: [...byStatus.entries()].map(([state, count]) => ({ state: state as RequestState, count })),
+    activity,
+    partsUsed: [],
+    warranties,
+    money: { quotedCents: 0, invoicedCents: invoicedTotal, collectedCents: collected, awaitingFundsCents: awaiting },
+    score: null,
+    reviews: [],
+    perProperty,
+  };
 }
 
 // ——— v8 R1 helpers ———
@@ -3325,6 +3615,20 @@ interface DemoJobPart {
 }
 const demoJobParts: DemoJobPart[] = [];
 let demoPartSeq = 0;
+
+/** v8 R6: reviews (one per job) — parity: job_reviews. */
+interface DemoReview {
+  id: string;
+  requestId: string;
+  tradieContactId: string;
+  rating: number;
+  comment: string | null;
+  reviewerRole: "occupant" | "payer";
+  response: string | null;
+  createdAt: string;
+}
+const demoReviews: DemoReview[] = [];
+let demoReviewSeq = 0;
 
 /** Demo stand-in for the live store's work_order aggregate events —
  * variance/payment events never enter the request's state-machine stream. */

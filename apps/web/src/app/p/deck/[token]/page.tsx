@@ -53,6 +53,10 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
           </p>
         </div>
 
+        <Link href={`/p/perf/${token}`} className="rounded-2xl border border-field-line bg-field-900 px-4 py-3 text-sm font-semibold text-white/80 active:scale-[0.98]">
+          📈 Portfolio performance →
+        </Link>
+
         {/* George's batch offers — same suburb, one run, certificates file themselves. */}
         {ctx.batchableCompliance.length > 0 && (
           <div>

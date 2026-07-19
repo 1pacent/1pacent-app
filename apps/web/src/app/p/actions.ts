@@ -200,6 +200,17 @@ export async function verifySettleAction(token: string, requestId: string) {
   if (result.ok) {
     await poke(jobTopic(requestId));
     await poke(tradeTopic());
+    // Trust short (v8 R6): the obligation hands to the owner — one tap pays
+    // now and the tradie still gets same-day money.
+    if (result.funding === "owner_handoff") {
+      await pushMoment(requestId, "payer", {
+        title: "Rent hasn't landed — pay this one now?",
+        body: "The property's trust balance is short. One tap pays by card; your tradie is paid today.",
+        path: `job/${requestId}`,
+        oneTap: { kind: "fund_job", choices: [{ choice: "pay", label: "Pay now" }] },
+        tag: `fund-${requestId}`,
+      });
+    }
   }
   return result;
 }
@@ -284,6 +295,27 @@ export async function setFastPayAction(token: string, enabled: boolean) {
 
 export async function generateDataPackAction(token: string, propertyId: string) {
   return (await getData()).generateReport(token, "property_data_pack", propertyId);
+}
+
+// ——— v8 R6: feedback, performance, funding ———
+
+export async function submitReviewAction(token: string, requestId: string, input: { rating: number; comment?: string }) {
+  const result = await (await getData()).submitReview(token, requestId, input);
+  if (result.ok) await poke(jobTopic(requestId));
+  return result;
+}
+
+export async function respondToReviewAction(token: string, reviewId: string, response: string) {
+  return (await getData()).respondToReview(token, reviewId, response);
+}
+
+export async function fundJobNowAction(token: string, requestId: string) {
+  const result = await (await getData()).fundJobNow(token, requestId);
+  if (result.ok) {
+    await poke(jobTopic(requestId));
+    await poke(tradeTopic());
+  }
+  return result;
 }
 
 // ——— v8 R3.5: parts to job ———
