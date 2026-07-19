@@ -312,3 +312,20 @@ filter), and the renter saw "Booked." for a job that was actually quoting.
   electrical, Leo Baker plumbing, Sarah Mannis general_maintenance); new
   seeded seats `demo-tradie-leo` / `demo-tradie-sarah`. e2e (16 checks) +
   202 core tests green.
+
+## R8.2 — zaivo.com.au, operator login, the shutter (2026-07-20)
+
+- **Domain**: zaivo.com.au + www + admin.zaivo.com.au attached to the Vercel
+  project (registrar CrazyDomains, operator-configured DNS);
+  `MARKETING_HOST=zaivo.com.au` — the customer site serves at the domain
+  root, the operator console at admin.zaivo.com.au. Site header/title/footer
+  now say **Zaivo** (product interaction stays "the Fix Button").
+- **Operator login** (`lib/admin-session.ts`): username + password from
+  `WEBSITE_ADMIN_LOGIN_USERNAME` / `WEBSITE_ADMIN_LOGIN_PASSWORD` mint a
+  derived SHA-256 session cookie (password never round-trips); the legacy
+  `ADMIN_ACCESS_KEY` still works (blank username + key as password).
+  Middleware verifies either, edge-safe.
+- **The shutter**: `SITE_COMING_SOON=1` rewrites `/` and `/site/*` on the
+  marketing host to a branded /soon page (early-access email:
+  fixitfelix@agentmail.to). Persona links, the app host, and the admin
+  console are unaffected. Flip = set/unset the env var + redeploy.

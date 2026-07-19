@@ -3,7 +3,7 @@ import { FelixWidget } from "@/components/felix-widget";
 import { JoinForm } from "./join-form";
 
 export const metadata: Metadata = {
-  title: "The Fix Button — press it, and the job runs itself",
+  title: "Zaivo — press the button, the repair runs itself",
   description:
     "One button for property repairs: upfront fixed prices from real completed jobs, licence-verified tradies, live tracking, money released only when you say it's done — and an address record that remembers everything, forever.",
 };
@@ -78,7 +78,7 @@ export default function SitePage() {
         {/* Nav */}
         <header className="flex items-center justify-between py-5">
           <p className="text-lg font-extrabold tracking-tight">
-            <span className="text-hivis-400">■</span> The Fix Button
+            <span className="text-hivis-400">■</span> Zaivo
           </p>
           <nav className="flex gap-4 text-xs font-semibold text-white/60">
             <a href="#how" className="hover:text-white">How it works</a>
@@ -204,7 +204,7 @@ export default function SitePage() {
 
         <footer className="pt-16 text-center text-[10px] leading-relaxed text-white/30">
           <p>
-            The Fix Button · a 1Pacent company · Melbourne, Australia
+            Zaivo · a 1Pacent company · Melbourne, Australia
             <br />
             Payments are processed by a licensed payment provider; we never hold client funds. Planning estimates are
             not tax or legal advice. VIC urgent-repair provisions honoured.
