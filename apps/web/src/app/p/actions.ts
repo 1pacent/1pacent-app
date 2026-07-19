@@ -1,6 +1,7 @@
 "use server";
 
-import { triageIntake, OpenRouterClient, SALLY_PROMPT_VERSION } from "@1pacent/agents";
+import { triageIntake, SALLY_PROMPT_VERSION } from "@1pacent/agents";
+import { aiClient } from "@/lib/ai";
 import { getPlaybook, playbookForCategory, type RequestCategory } from "@1pacent/core";
 import { getData } from "@/lib/data";
 import { jobTopic, poke, tradeTopic } from "@/lib/poke";
@@ -51,7 +52,7 @@ export async function triagePreviewAction(
     return { ok: false, error: "llm_off" };
   }
   try {
-    const client = new OpenRouterClient({ apiKey });
+    const client = aiClient(); // Hermes-first (hermes-1pacent), OpenRouter fallback
     const { triage, aiMeta } = await triageIntake({
       client,
       model: TRIAGE_MODEL,

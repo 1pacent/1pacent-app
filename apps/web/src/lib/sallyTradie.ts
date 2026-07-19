@@ -1,4 +1,5 @@
 import "server-only";
+import { aiClient } from "@/lib/ai";
 import {
   OpenRouterClient,
   createOpenRouterEmbedder,
@@ -29,7 +30,7 @@ const EMBEDDING_MODEL = process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-e
 function requireOpenRouterClient(): OpenRouterClient {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error("OPENROUTER_API_KEY not configured");
-  return new OpenRouterClient({ apiKey });
+  return aiClient(); // Hermes-first (hermes-1pacent), OpenRouter fallback
 }
 
 export interface SendTradieLeadMessageResult {

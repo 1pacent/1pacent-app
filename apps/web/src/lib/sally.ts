@@ -1,4 +1,5 @@
 import "server-only";
+import { aiClient } from "@/lib/ai";
 import {
   OpenRouterClient,
   createOpenRouterEmbedder,
@@ -31,9 +32,8 @@ const EMBEDDING_MODEL = process.env.OPENROUTER_EMBEDDING_MODEL || "openai/text-e
 const MIN_CONFIDENCE_FOR_PRICE_BAND = 0.4;
 
 function requireOpenRouterClient(): OpenRouterClient {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY not configured");
-  return new OpenRouterClient({ apiKey });
+  // Hermes-first (hermes-1pacent / Felix's runtime), OpenRouter fallback.
+  return aiClient();
 }
 
 export interface SendSallyMessageResult {

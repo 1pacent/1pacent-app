@@ -222,3 +222,35 @@ What changed:
   that container's next restart — its other tenants were not disturbed).
 - The never-started per-app n8n service removed from this repo's
   `docker-compose.yml`.
+
+## R8 — hermes-1pacent (Felix) integration (2026-07-19)
+
+A dedicated Hermes agent stack now serves 1Pacent, fully separate from the
+AI4Boards stack (which keeps its own hermes/honcho/qdrant untouched). The
+only shared service between the two projects remains the one n8n.
+
+**Stack** (`/opt/hermes-1pacent/docker-compose.yml`):
+- `hermes-1pacent` — nousresearch/hermes-agent:latest, gateway mode, API
+  server on 127.0.0.1:8643, public at `https://api.1pacent.com/hermes/*`
+  (Caddy strip_prefix → container; n8n webhooks unaffected).
+- `qdrant-1pacent` — Felix's own vector store, internal network only.
+- Memory: the standalone honcho renamed to `honcho-1pacent` (host port
+  18082 unchanged), Felix isolated in workspace `felix-1pacent`.
+- Agent **Felix** (SOUL.md): greeter / support / triage persona. DB access
+  via a Supabase role `felix_readonly` (SELECT-only + RLS policy `felix_ro`
+  on all public tables; writes denied at role level) — he can answer from
+  the ledger but must propose + seek approval for any change, and Hermes'
+  terminal approval gate applies to script execution.
+- Channels: AgentMail email (fixitfelix@agentmail.to, IMAP/SMTP connected);
+  Telegram seam ready — `TELEGRAM_BOT_TOKEN` empty until operator supplies
+  the bot token.
+
+**App integration** — `apps/web/src/lib/ai.ts` (`aiClient()`): a
+Hermes-first client that sends chatCompletion/chatWithTools to
+`$HERMES_URL/v1/chat/completions` (Bearer `$HERMES_API_KEY`) and falls back
+to direct OpenRouter on any failure; embeddings always go direct. Swapped in
+at the three construction sites: `lib/sally.ts`, `lib/sallyTradie.ts`,
+`app/p/actions.ts` (triage). Env: `HERMES_URL=https://api.1pacent.com/hermes`,
+`HERMES_API_KEY`, `HERMES_OPENAI_COMPAT=1`, `HERMES_AGENT=felix` — set on
+VPS `.env` and Vercel production. Without those vars the app behaves exactly
+as before (direct OpenRouter).
