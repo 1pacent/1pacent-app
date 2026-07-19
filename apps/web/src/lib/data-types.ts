@@ -1024,6 +1024,44 @@ export interface DataSource {
   /** The owner pays a trust-short job now (card, simulated) — the tradie
    * still gets same-day money. Also reachable as a one-tap fund_job Moment. */
   fundJobNow(ownerToken: string, requestId: string): Promise<{ ok: boolean; error?: string }>;
+
+  // ——— v8 R7: PM subscription + house tradies ———
+
+  /** The PM's PUM cohort subscription (HubSpot PRD-1P-004-* tiers). */
+  getPmSubscription(pmPortfolioToken: string): Promise<PmSubscriptionView | null>;
+  selectPmSubscription(pmPortfolioToken: string, sku: string): Promise<{ ok: boolean; error?: string }>;
+
+  /** Up to 3 default tradies for small jobs (the PM's own handyman, an
+   * onsite man, or a standing agreement) + the small-job ceiling. */
+  getHouseTradies(pmPortfolioToken: string): Promise<HouseTradiesView | null>;
+  setHouseTradies(
+    pmPortfolioToken: string,
+    input: { tradieContactIds: string[]; maxJobCents: number },
+  ): Promise<{ ok: boolean; error?: string }>;
+}
+
+/** ——— v8 R7 views ——— */
+
+export interface PmTierOption {
+  sku: string;
+  name: string;
+  priceCents: number;
+  propertyCap: number;
+}
+
+export interface PmSubscriptionView {
+  current: (PmTierOption & { selectedAt: string }) | null;
+  options: PmTierOption[];
+  propertiesUnderManagement: number;
+  /** PUM exceeds the chosen cap — nudge to the next cohort. */
+  overCap: boolean;
+}
+
+export interface HouseTradiesView {
+  tradies: Array<{ contactId: string; name: string; online: boolean; priority: number }>;
+  maxJobCents: number;
+  /** The org's tradie businesses, for the picker. */
+  networkTradies: Array<{ contactId: string; name: string }>;
 }
 
 /** ——— v8 R6: the shared performance read model ——— */

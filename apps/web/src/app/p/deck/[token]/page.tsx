@@ -4,6 +4,8 @@ import { Panel, PulseTopBar } from "@/components/pulse/shell";
 import { LiveRefresh } from "@/components/pulse/live-refresh";
 import { EnablePush } from "@/components/pulse/enable-push";
 import { BatchCard } from "./batch-card";
+import { SubscriptionCard } from "./subscription-card";
+import { HouseTradiesCard } from "./house-tradies-card";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +37,11 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
     );
   }
 
-  const tiles = await data.getDeckTiles(token);
+  const [tiles, subscription, houseTradies] = await Promise.all([
+    data.getDeckTiles(token),
+    data.getPmSubscription(token),
+    data.getHouseTradies(token),
+  ]);
   const needsYou = tiles.filter((t) => t.needsHuman && !["closed", "cancelled"].includes(t.state));
   const moving = tiles.filter((t) => !t.needsHuman && !["closed", "cancelled"].includes(t.state));
   const doneRecently = tiles.filter((t) => ["closed", "cancelled"].includes(t.state)).slice(0, 5);
@@ -116,6 +122,8 @@ export default async function DeckPage({ params }: { params: Promise<{ token: st
           )}
         </div>
 
+        {subscription && <SubscriptionCard token={token} initial={subscription} />}
+        {houseTradies && <HouseTradiesCard token={token} initial={houseTradies} />}
         <EnablePush token={token} vapidPublicKey={process.env.VAPID_PUBLIC_KEY ?? null} />
 
         {doneRecently.length > 0 && (

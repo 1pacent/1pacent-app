@@ -48,6 +48,19 @@ export interface AdminOverview {
     openJobs: number;
     addresses: string[];
   }>;
+  /** v8 R7: which monthly cohort each PM chose, against actual PUM. */
+  pmSubscriptions: Array<{
+    pmName: string;
+    sku: string;
+    tierName: string;
+    priceCents: number;
+    propertyCap: number;
+    propertiesUnderManagement: number;
+    overCap: boolean;
+    hubspotDealId: string | null;
+    selectedAt: string;
+  }>;
+  subscriptionMrrCents: number;
   joinRequests: Array<{
     persona: string;
     fullName: string;
@@ -75,7 +88,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
     return demoAdminOverview();
   }
   const db = serviceClient();
-  const [{ data: props }, { data: contacts }, { data: presence }, { data: reqs }, { data: pays }, { data: joins }] =
+  const [{ data: props }, { data: contacts }, { data: presence }, { data: reqs }, { data: pays }, { data: joins }, { data: subs }] =
     await Promise.all([
       db.from("properties").select("id, address_line1, suburb, pm_contact_id, owner_contact_id"),
       db.from("contacts").select("id, kind, full_name"),
@@ -83,6 +96,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
       db.from("maintenance_requests").select("id, title, status, property_id, reported_at").order("reported_at", { ascending: false }).limit(500),
       db.from("payments").select("request_id, amount_cents, platform_fee_cents, fastpay_fee_cents, status, updated_at"),
       db.from("join_requests").select("persona, full_name, email, suburb, hubspot_id, created_at").order("created_at", { ascending: false }).limit(25),
+      db.from("pm_subscriptions").select("pm_contact_id, sku, name, price_cents, property_cap, hubspot_deal_id, selected_at"),
     ]);
 
   const propRows = (props ?? []) as Array<{ id: string; address_line1: string; suburb: string; pm_contact_id: string | null; owner_contact_id: string | null }>;
@@ -171,9 +185,35 @@ export async function getAdminOverview(): Promise<AdminOverview> {
   const presenceRows = (presence ?? []) as Array<{ online: boolean }>;
   const joinRows = (joins ?? []) as Array<{ persona: string; full_name: string; email: string; suburb: string | null; hubspot_id: string | null; created_at: string }>;
 
+  const subRows = (subs ?? []) as Array<{
+    pm_contact_id: string;
+    sku: string;
+    name: string;
+    price_cents: number;
+    property_cap: number;
+    hubspot_deal_id: string | null;
+    selected_at: string;
+  }>;
+  const pmSubscriptions = subRows.map((sr) => {
+    const pum = propRows.filter((pp) => pp.pm_contact_id === sr.pm_contact_id).length;
+    return {
+      pmName: nameOf.get(sr.pm_contact_id) ?? "Unknown manager",
+      sku: sr.sku,
+      tierName: sr.name,
+      priceCents: Number(sr.price_cents),
+      propertyCap: Number(sr.property_cap),
+      propertiesUnderManagement: pum,
+      overCap: pum > Number(sr.property_cap),
+      hubspotDealId: sr.hubspot_deal_id,
+      selectedAt: sr.selected_at,
+    };
+  });
+
   return {
     dataSource: "live",
     hubspot: { configured: hubspotConfigured() },
+    pmSubscriptions,
+    subscriptionMrrCents: pmSubscriptions.reduce((sm, x) => sm + x.priceCents, 0),
     counts: {
       properties: propRows.length,
       propertyManagers: contactRows.filter((c) => c.kind === "property_manager").length,

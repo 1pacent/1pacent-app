@@ -76,6 +76,8 @@ import type {
   PushTarget,
   PerformanceView,
   ReviewView,
+  HouseTradiesView,
+  PmSubscriptionView,
   TradieRunView,
   AutoQuoteSettingsView,
   CanvasCard,
@@ -122,6 +124,7 @@ import {
   type QuotePickInfo,
 } from "./canvas";
 import { projectJob, type JobSource } from "./job-projection";
+import { DEFAULT_PM_TIERS } from "./pm-tiers";
 
 /**
  * In-memory demo repository. This is the seam where the Supabase-backed
@@ -2178,7 +2181,22 @@ export const demoData: DataSource = {
     });
 
     request.events.push({ eventType: "request_quotes", actorType: "system", actorId: "george:offer", at: now });
-    const online = onlineTradieIds().slice(0, 3);
+    // House dispatch (v8 R7): small jobs at a PM-managed property go to the
+    // PM's chosen defaults first.
+    let online = onlineTradieIds().slice(0, 3);
+    const bookProp = properties.find((pp) => pp.id === propertyId);
+    if (bookProp?.pmContactId) {
+      const house = demoHouseTradies[bookProp.pmContactId];
+      if (house && house.tradieContactIds.length > 0 && amount <= house.maxJobCents) {
+        online = house.tradieContactIds.slice(0, 3);
+        demoWorkOrderEvents.push({
+          workOrderId: request.id,
+          eventType: "house_dispatch",
+          at: now,
+          note: "Small job — dispatched to the manager's house tradies first.",
+        });
+      }
+    }
     for (const tradieId of online) {
       quotes.push({
         id: `quote-${Math.random().toString(36).slice(2, 8)}`,
@@ -2989,6 +3007,69 @@ export const demoData: DataSource = {
     return null;
   },
 
+  // ——— v8 R7: PM subscription + house tradies ———
+
+  async getPmSubscription(pmPortfolioToken): Promise<PmSubscriptionView | null> {
+    const resolved = resolveDemoToken(pmPortfolioToken);
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return null;
+    const pum = properties.filter((pp) => pp.pmContactId === resolved.contactId).length;
+    const sub = demoPmSubscriptions[resolved.contactId] ?? null;
+    return {
+      current: sub ? { ...sub } : null,
+      options: DEFAULT_PM_TIERS.map((t) => ({ sku: t.sku, name: t.name, priceCents: t.priceCents, propertyCap: t.propertyCap })),
+      propertiesUnderManagement: pum,
+      overCap: Boolean(sub && pum > sub.propertyCap),
+    };
+  },
+
+  async selectPmSubscription(pmPortfolioToken, sku) {
+    const resolved = resolveDemoToken(pmPortfolioToken);
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const tier = DEFAULT_PM_TIERS.find((t) => t.sku === sku);
+    if (!tier) return { ok: false, error: "Unknown subscription tier." };
+    demoPmSubscriptions[resolved.contactId] = {
+      sku: tier.sku,
+      name: tier.name,
+      priceCents: tier.priceCents,
+      propertyCap: tier.propertyCap,
+      selectedAt: new Date().toISOString(),
+    };
+    return { ok: true };
+  },
+
+  async getHouseTradies(pmPortfolioToken): Promise<HouseTradiesView | null> {
+    const resolved = resolveDemoToken(pmPortfolioToken);
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return null;
+    const cfg = demoHouseTradies[resolved.contactId] ?? { tradieContactIds: [], maxJobCents: 30_000 };
+    const businesses = contacts.filter((c) => c.kind === "tradie" && !c.employerContactId);
+    return {
+      tradies: cfg.tradieContactIds.map((id, i) => ({
+        contactId: id,
+        name: contacts.find((c) => c.id === id)?.fullName ?? "",
+        online:
+          Boolean(tradiePresence[id]?.online) ||
+          contacts.some((c) => c.employerContactId === id && tradiePresence[c.id]?.online),
+        priority: i + 1,
+      })),
+      maxJobCents: cfg.maxJobCents,
+      networkTradies: businesses.map((c) => ({ contactId: c.id, name: c.fullName })),
+    };
+  },
+
+  async setHouseTradies(pmPortfolioToken, input) {
+    const resolved = resolveDemoToken(pmPortfolioToken);
+    if (resolved?.scope !== "pm_portfolio" || !resolved.contactId) return { ok: false, error: "This link isn't active." };
+    const ids = [...new Set(input.tradieContactIds)].slice(0, 3);
+    if (ids.some((id) => !contacts.some((c) => c.id === id && c.kind === "tradie"))) {
+      return { ok: false, error: "Pick tradies from the network." };
+    }
+    demoHouseTradies[resolved.contactId] = {
+      tradieContactIds: ids,
+      maxJobCents: Math.max(0, Math.min(500_000, Math.round(input.maxJobCents))),
+    };
+    return { ok: true };
+  },
+
   // ——— v8 R5b: crews ———
 
   async listCrew(tradiePortalToken) {
@@ -3127,9 +3208,26 @@ export function demoAdminOverview() {
     byPm.set(pmName, g);
   }
 
+  const pmSubscriptions = Object.entries(demoPmSubscriptions).map(([pmId, sub]) => {
+    const pum = properties.filter((pp) => pp.pmContactId === pmId).length;
+    return {
+      pmName: contacts.find((c) => c.id === pmId)?.fullName ?? "Unknown manager",
+      sku: sub.sku,
+      tierName: sub.name,
+      priceCents: sub.priceCents,
+      propertyCap: sub.propertyCap,
+      propertiesUnderManagement: pum,
+      overCap: pum > sub.propertyCap,
+      hubspotDealId: null,
+      selectedAt: sub.selectedAt,
+    };
+  });
+
   return {
     dataSource: "demo" as const,
     hubspot: { configured: Boolean(process.env.HUBSPOT_ACCESS_TOKEN) },
+    pmSubscriptions,
+    subscriptionMrrCents: pmSubscriptions.reduce((sm, x) => sm + x.priceCents, 0),
     counts: {
       properties: properties.length,
       propertyManagers: contacts.filter((c) => c.kind === "property_manager").length,
@@ -3615,6 +3713,11 @@ interface DemoJobPart {
 }
 const demoJobParts: DemoJobPart[] = [];
 let demoPartSeq = 0;
+
+/** v8 R7: the PM's subscription + house tradies — parity: pm_subscriptions,
+ * pm_preferred_tradies, pm_dispatch_prefs. */
+const demoPmSubscriptions: Record<string, { sku: string; name: string; priceCents: number; propertyCap: number; selectedAt: string }> = {};
+const demoHouseTradies: Record<string, { tradieContactIds: string[]; maxJobCents: number }> = {};
 
 /** v8 R6: reviews (one per job) — parity: job_reviews. */
 interface DemoReview {

@@ -47,6 +47,7 @@ export default async function AdminPage() {
             ["Property managers", String(o.counts.propertyManagers)],
             ["Tradies (online now)", `${o.counts.tradies} (${o.counts.tradiesOnline})`],
             ["Join requests", String(o.counts.joinRequests)],
+            ["Subscription MRR", dollars(o.subscriptionMrrCents)],
           ].map(([label, value]) => (
             <div key={label} className="rounded-2xl border border-field-line bg-field-900 p-4">
               <p className="text-[10px] uppercase tracking-widest text-white/40">{label}</p>
@@ -132,6 +133,46 @@ export default async function AdminPage() {
                 </tbody>
               </table>
             </>
+          )}
+        </section>
+
+        {/* PM subscriptions (v8 R7): who pays what, against actual PUM */}
+        <section className="mt-6 rounded-2xl border border-field-line bg-field-900 p-5">
+          <h2 className="text-xs font-semibold uppercase tracking-widest text-white/40">Manager subscriptions</h2>
+          {o.pmSubscriptions.length === 0 ? (
+            <p className="mt-3 text-sm text-white/40">No cohorts selected yet — PMs pick theirs on the Deck.</p>
+          ) : (
+            <table className="mt-3 w-full text-left text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wide text-white/40">
+                  <th className="py-1 font-semibold">Manager</th>
+                  <th className="py-1 font-semibold">Tier (SKU)</th>
+                  <th className="py-1 text-right font-semibold">$/mo</th>
+                  <th className="py-1 text-right font-semibold">Cap</th>
+                  <th className="py-1 text-right font-semibold">PUM</th>
+                  <th className="hidden py-1 text-right font-semibold sm:table-cell">CRM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {o.pmSubscriptions.map((sub) => (
+                  <tr key={sub.sku + sub.pmName} className="border-t border-field-line text-white/80">
+                    <td className="py-1.5 font-semibold text-white">{sub.pmName}</td>
+                    <td className="py-1.5">
+                      {sub.tierName} <span className="text-white/40">({sub.sku})</span>
+                    </td>
+                    <td className="py-1.5 text-right">{dollars(sub.priceCents)}</td>
+                    <td className="py-1.5 text-right">{sub.propertyCap}</td>
+                    <td className={`py-1.5 text-right font-bold ${sub.overCap ? "text-amber-300" : "text-mint-300"}`}>
+                      {sub.propertiesUnderManagement}
+                      {sub.overCap ? " ⚠ over cap" : ""}
+                    </td>
+                    <td className="hidden py-1.5 text-right sm:table-cell">
+                      {sub.hubspotDealId ? <span className="text-mint-300">deal ✓</span> : <span className="text-white/30">local</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </section>
 

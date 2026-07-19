@@ -297,6 +297,16 @@ export async function generateDataPackAction(token: string, propertyId: string) 
   return (await getData()).generateReport(token, "property_data_pack", propertyId);
 }
 
+// ——— v8 R7: PM subscription + house tradies ———
+
+export async function selectPmSubscriptionAction(token: string, sku: string) {
+  return (await getData()).selectPmSubscription(token, sku);
+}
+
+export async function setHouseTradiesAction(token: string, input: { tradieContactIds: string[]; maxJobCents: number }) {
+  return (await getData()).setHouseTradies(token, input);
+}
+
 // ——— v8 R6: feedback, performance, funding ———
 
 export async function submitReviewAction(token: string, requestId: string, input: { rating: number; comment?: string }) {

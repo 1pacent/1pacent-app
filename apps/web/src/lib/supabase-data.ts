@@ -59,6 +59,7 @@ import {
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
 import { resolvePsp } from "./payments";
+import { listPmTiers, recordSubscriptionDeal } from "./hubspot";
 import {
   buildOwnerCanvas,
   buildPmCanvas,
@@ -2599,7 +2600,7 @@ export const supabaseData: DataSource = {
     const db = serviceClient();
     const propertyId = await bookablePropertyId(db, token, input.propertyId);
     if (!propertyId) return { ok: false, error: "This link isn't active." };
-    const { data: prop } = await db.from("properties").select("id, org_id").eq("id", propertyId).maybeSingle();
+    const { data: prop } = await db.from("properties").select("id, org_id, pm_contact_id").eq("id", propertyId).maybeSingle();
     if (!prop) return { ok: false, error: "Property not found." };
     const playbook = getPlaybook(input.playbookKey) ?? playbookForCategory(input.category);
     const urgent = isUrgentCategory(playbook.category);
@@ -2685,7 +2686,32 @@ export const supabaseData: DataSource = {
     await db.from("events").insert({ ...base, event_type: "request_quotes", actor_type: "system", actor_id: "george:offer" });
     await db.from("maintenance_requests").update({ status: "quoting" }).eq("id", req.id);
 
-    const onlineIds = (await onlineTradieIds(db)).slice(0, 3);
+    // House dispatch (v8 R7): small jobs at a PM-managed property go to the
+    // PM's chosen defaults first — their own handyman, the onsite man, or a
+    // standing agreement — instead of the open network.
+    let onlineIds = (await onlineTradieIds(db)).slice(0, 3);
+    let dispatchMode: "network" | "house" = "network";
+    if (prop.pm_contact_id) {
+      const [{ data: house }, { data: prefs }] = await Promise.all([
+        db.from("pm_preferred_tradies").select("tradie_contact_id, priority").eq("pm_contact_id", prop.pm_contact_id).order("priority"),
+        db.from("pm_dispatch_prefs").select("house_max_job_cents").eq("pm_contact_id", prop.pm_contact_id).maybeSingle(),
+      ]);
+      const houseIds = ((house ?? []) as Array<{ tradie_contact_id: string }>).map((h) => h.tradie_contact_id);
+      const ceiling = prefs ? Number(prefs.house_max_job_cents) : 30_000;
+      if (houseIds.length > 0 && amount <= ceiling) {
+        onlineIds = houseIds.slice(0, 3);
+        dispatchMode = "house";
+      }
+    }
+    if (dispatchMode === "house") {
+      await db.from("events").insert({
+        ...base,
+        event_type: "house_dispatch",
+        actor_type: "system",
+        actor_id: "george:house",
+        payload: { note: "Small job — dispatched to the manager's house tradies first." },
+      });
+    }
     for (const tradieId of onlineIds) {
       await db.from("quotes").insert({
         org_id: prop.org_id,
@@ -4006,6 +4032,141 @@ export const supabaseData: DataSource = {
             .select("id, address_line1, suburb, pm_contact_id, trust_balance_cents")
             .eq("owner_contact_id", row.aggregate_id);
     return portfolioPerformance(db, scope, (props ?? []) as Array<{ id: string; address_line1: string; suburb: string; pm_contact_id: string | null; trust_balance_cents: number }>);
+  },
+
+  // ——— v8 R7: PM subscription + house tradies ———
+
+  async getPmSubscription(pmPortfolioToken) {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const [{ data: sub }, { count }, options] = await Promise.all([
+      db.from("pm_subscriptions").select("sku, name, price_cents, property_cap, selected_at").eq("pm_contact_id", resolved.contact_id).maybeSingle(),
+      db.from("properties").select("id", { count: "exact", head: true }).eq("pm_contact_id", resolved.contact_id),
+      listPmTiers(),
+    ]);
+    const pum = count ?? 0;
+    const current = sub
+      ? {
+          sku: sub.sku as string,
+          name: sub.name as string,
+          priceCents: Number(sub.price_cents),
+          propertyCap: Number(sub.property_cap),
+          selectedAt: String(sub.selected_at),
+        }
+      : null;
+    return {
+      current,
+      options: options.map((t) => ({ sku: t.sku, name: t.name, priceCents: t.priceCents, propertyCap: t.propertyCap })),
+      propertiesUnderManagement: pum,
+      overCap: Boolean(current && pum > current.propertyCap),
+    };
+  },
+
+  async selectPmSubscription(pmPortfolioToken, sku) {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const tiers = await listPmTiers();
+    const tier = tiers.find((t) => t.sku === sku);
+    if (!tier) return { ok: false, error: "Unknown subscription tier." };
+    const db = serviceClient();
+    const { data: pm } = await db.from("contacts").select("org_id, full_name, email").eq("id", resolved.contact_id).maybeSingle();
+    if (!pm) return { ok: false, error: "Manager not found." };
+    const { count } = await db.from("properties").select("id", { count: "exact", head: true }).eq("pm_contact_id", resolved.contact_id);
+    const pum = count ?? 0;
+    // CRM mirror is best-effort; the row is truth.
+    const { dealId } = await recordSubscriptionDeal({
+      pmName: pm.full_name as string,
+      pmEmail: (pm.email as string | null) ?? null,
+      tier,
+      propertiesUnderManagement: pum,
+    });
+    const { error } = await db.from("pm_subscriptions").upsert({
+      pm_contact_id: resolved.contact_id,
+      org_id: pm.org_id,
+      sku: tier.sku,
+      name: tier.name,
+      price_cents: tier.priceCents,
+      property_cap: tier.propertyCap,
+      hubspot_product_id: tier.hubspotProductId,
+      hubspot_deal_id: dealId,
+      selected_at: new Date().toISOString(),
+    });
+    if (error) return { ok: false, error: error.message };
+    await db.from("events").insert({
+      org_id: pm.org_id,
+      aggregate_type: "contact",
+      aggregate_id: resolved.contact_id,
+      event_type: "subscription_selected",
+      actor_type: "agency_user",
+      actor_id: `token:${resolved.id}`,
+      payload: { sku: tier.sku, priceCents: tier.priceCents, propertyCap: tier.propertyCap, pum, hubspotDealId: dealId },
+    });
+    return { ok: true };
+  },
+
+  async getHouseTradies(pmPortfolioToken) {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return null;
+    const db = serviceClient();
+    const [{ data: rows }, { data: prefs }, { data: allTradies }, { data: presence }] = await Promise.all([
+      db.from("pm_preferred_tradies").select("tradie_contact_id, priority").eq("pm_contact_id", resolved.contact_id).order("priority"),
+      db.from("pm_dispatch_prefs").select("house_max_job_cents").eq("pm_contact_id", resolved.contact_id).maybeSingle(),
+      db.from("contacts").select("id, full_name, employer_contact_id").eq("kind", "tradie"),
+      db.from("tradie_presence").select("tradie_contact_id, online").eq("online", true),
+    ]);
+    const onlineSet = new Set(((presence ?? []) as Array<{ tradie_contact_id: string }>).map((r) => r.tradie_contact_id));
+    const tradieRows = (allTradies ?? []) as Array<{ id: string; full_name: string; employer_contact_id: string | null }>;
+    const businesses = tradieRows.filter((c) => !c.employer_contact_id);
+    const nameOf = new Map(tradieRows.map((c) => [c.id, c.full_name]));
+    return {
+      tradies: ((rows ?? []) as Array<{ tradie_contact_id: string; priority: number }>).map((r) => ({
+        contactId: r.tradie_contact_id,
+        name: nameOf.get(r.tradie_contact_id) ?? "",
+        online: onlineSet.has(r.tradie_contact_id) || tradieRows.some((c) => c.employer_contact_id === r.tradie_contact_id && onlineSet.has(c.id)),
+        priority: r.priority,
+      })),
+      maxJobCents: prefs ? Number(prefs.house_max_job_cents) : 30_000,
+      networkTradies: businesses.map((c) => ({ contactId: c.id, name: c.full_name })),
+    };
+  },
+
+  async setHouseTradies(pmPortfolioToken, input) {
+    const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
+    if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
+    const ids = [...new Set(input.tradieContactIds)].slice(0, 3);
+    const db = serviceClient();
+    const { data: pm } = await db.from("contacts").select("org_id").eq("id", resolved.contact_id).maybeSingle();
+    if (!pm) return { ok: false, error: "Manager not found." };
+    if (ids.length > 0) {
+      const { data: valid } = await db.from("contacts").select("id").in("id", ids).eq("kind", "tradie");
+      if ((valid ?? []).length !== ids.length) return { ok: false, error: "Pick tradies from the network." };
+    }
+    await db.from("pm_preferred_tradies").delete().eq("pm_contact_id", resolved.contact_id);
+    for (let i = 0; i < ids.length; i++) {
+      await db.from("pm_preferred_tradies").insert({
+        pm_contact_id: resolved.contact_id,
+        tradie_contact_id: ids[i],
+        org_id: pm.org_id,
+        priority: i + 1,
+      });
+    }
+    const maxJobCents = Math.max(0, Math.min(500_000, Math.round(input.maxJobCents)));
+    await db.from("pm_dispatch_prefs").upsert({
+      pm_contact_id: resolved.contact_id,
+      org_id: pm.org_id,
+      house_max_job_cents: maxJobCents,
+    });
+    await db.from("events").insert({
+      org_id: pm.org_id,
+      aggregate_type: "contact",
+      aggregate_id: resolved.contact_id,
+      event_type: "house_tradies_set",
+      actor_type: "agency_user",
+      actor_id: `token:${resolved.id}`,
+      payload: { tradieContactIds: ids, maxJobCents },
+    });
+    return { ok: true };
   },
 
   // ——— v8 R5b: crews ———

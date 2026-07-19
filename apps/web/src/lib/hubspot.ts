@@ -66,3 +66,77 @@ export async function upsertHubspotContact(input: HubspotContactInput): Promise<
 function hsError(body: Record<string, unknown>): string {
   return typeof body.message === "string" ? body.message : "HubSpot call failed";
 }
+
+
+/** ——— v8 R7: PM subscription tiers from HubSpot products ——— */
+
+import { DEFAULT_PM_TIERS, type PmTier } from "./pm-tiers";
+export { DEFAULT_PM_TIERS, type PmTier };
+
+/** Live tiers from the HubSpot product catalogue (SKU prefix PRD-1P-004-);
+ * falls back to the shipped ladder on any failure. */
+export async function listPmTiers(): Promise<PmTier[]> {
+  if (!hubspotConfigured()) return DEFAULT_PM_TIERS;
+  try {
+    const res = await call("/crm/v3/objects/products?limit=100&properties=name,price,hs_sku", "GET");
+    const results = (res.body.results ?? []) as Array<{ id: string; properties: { name?: string; price?: string; hs_sku?: string } }>;
+    const tiers: PmTier[] = [];
+    for (const prod of results) {
+      const sku = prod.properties.hs_sku ?? "";
+      const m = /^PRD-1P-004-(\d+)$/.exec(sku);
+      if (!m) continue;
+      tiers.push({
+        sku,
+        name: (prod.properties.name ?? sku).trim(),
+        priceCents: Math.round(Number(prod.properties.price ?? 0) * 100),
+        propertyCap: Number(m[1]),
+        hubspotProductId: prod.id,
+      });
+    }
+    return tiers.length > 0 ? tiers.sort((x, y) => x.propertyCap - y.propertyCap) : DEFAULT_PM_TIERS;
+  } catch (e) {
+    console.warn("[hubspot] product fetch failed, using shipped tiers:", e);
+    return DEFAULT_PM_TIERS;
+  }
+}
+
+/** Mirror the selection as a HubSpot deal (+ line item) on the PM's contact.
+ * Best-effort: local truth is the pm_subscriptions row either way. */
+export async function recordSubscriptionDeal(input: {
+  pmName: string;
+  pmEmail: string | null;
+  tier: PmTier;
+  propertiesUnderManagement: number;
+}): Promise<{ dealId: string | null }> {
+  if (!hubspotConfigured()) return { dealId: null };
+  try {
+    let contactId: string | null = null;
+    if (input.pmEmail) {
+      const hs = await upsertHubspotContact({ email: input.pmEmail, firstName: input.pmName.split(" ")[0], lastName: input.pmName.split(" ").slice(1).join(" ") || undefined, persona: "pm" });
+      if (hs.ok) contactId = hs.id;
+    }
+    const deal = await call("/crm/v3/objects/deals", "POST", {
+      properties: {
+        dealname: `1Pacent PUM subscription — ${input.tier.name} (${input.propertiesUnderManagement} PUM)`,
+        amount: String(input.tier.priceCents / 100),
+        pipeline: "default",
+        dealstage: "appointmentscheduled",
+      },
+      ...(contactId
+        ? { associations: [{ to: { id: contactId }, types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }] }] }
+        : {}),
+    });
+    if (!deal.ok || !deal.body.id) return { dealId: null };
+    const dealId = String(deal.body.id);
+    if (input.tier.hubspotProductId) {
+      await call("/crm/v3/objects/line_items", "POST", {
+        properties: { hs_product_id: input.tier.hubspotProductId, quantity: "1" },
+        associations: [{ to: { id: dealId }, types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 20 }] }],
+      }).catch(() => null);
+    }
+    return { dealId };
+  } catch (e) {
+    console.warn("[hubspot] deal mirror failed:", e);
+    return { dealId: null };
+  }
+}
