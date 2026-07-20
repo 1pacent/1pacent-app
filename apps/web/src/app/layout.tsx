@@ -3,7 +3,7 @@ import { jetbrainsMono, publicSans, sourceSerif } from "@/fonts";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "1Pacent — The Property Passport",
+  title: "Zaivo — press the button, the repair runs itself",
   description:
     "Press the button, and the job runs itself — while the address remembers everything. Verified tradies, upfront prices, live tracking, same-day payment.",
 };

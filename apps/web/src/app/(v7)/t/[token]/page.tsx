@@ -18,7 +18,7 @@ export default async function TradiePortalPage({ params }: { params: Promise<{ t
     return (
       <div className="mx-auto max-w-md py-12 text-center">
         <h1 className="text-xl font-semibold text-slate-900">This link isn&apos;t active</h1>
-        <p className="mt-2 text-sm text-slate-600">Ask 1Pacent for a fresh portal link.</p>
+        <p className="mt-2 text-sm text-slate-600">Ask Zaivo for a fresh portal link.</p>
       </div>
     );
   }

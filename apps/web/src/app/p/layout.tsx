@@ -2,10 +2,10 @@ import type { Metadata, Viewport } from "next";
 import { FelixWidget } from "@/components/felix-widget";
 
 export const metadata: Metadata = {
-  title: "1Pacent Pulse",
+  title: "Zaivo",
   description: "Press the button, and the job runs itself — while the address remembers everything.",
   manifest: "/manifest.json",
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "1Pacent" },
+  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Zaivo" },
 };
 
 export const viewport: Viewport = {

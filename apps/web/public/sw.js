@@ -13,9 +13,9 @@ self.addEventListener("push", (event) => {
   try {
     data = event.data ? event.data.json() : {};
   } catch {
-    data = { title: "1Pacent", body: event.data ? event.data.text() : "" };
+    data = { title: "Zaivo", body: event.data ? event.data.text() : "" };
   }
-  const { title = "1Pacent", body = "", url = "/p", actUrl = null, actions = [], tag } = data;
+  const { title = "Zaivo", body = "", url = "/p", actUrl = null, actions = [], tag } = data;
   event.waitUntil(
     self.registration.showNotification(title, {
       body,

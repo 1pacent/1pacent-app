@@ -3298,6 +3298,8 @@ export function demoAdminOverview() {
     propertiesByPm: [...byPm.values()].sort((a, b) => b.properties - a.properties),
     joinRequests: [...demoJoinRequestRows].reverse().map((j) => ({
       persona: j.persona, fullName: j.fullName, email: j.email, suburb: j.suburb,
+      company: null, abn: null, trades: null, serviceSuburbs: null,
+      propertiesUnderMgmt: null, propertyCount: null,
       hubspotSynced: false, at: j.createdAt,
     })),
   };

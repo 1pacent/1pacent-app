@@ -16,7 +16,7 @@ interface Msg {
 }
 
 const GREETING =
-  "G'day — Felix here, 1Pacent's concierge. Ask me anything about how the network works, your jobs, or where to go next.";
+  "G'day — Felix here, Zaivo's concierge. Ask me anything about how the network works, your jobs, or where to go next.";
 
 function personaFromPath(pathname: string): string {
   if (pathname.startsWith("/p/fix")) return "renter";
@@ -77,7 +77,7 @@ export function FelixWidget({ persona, theme = "dark" }: { persona?: string; the
           <div className="flex items-center justify-between border-b border-inherit px-4 py-3">
             <div>
               <div className="text-sm font-semibold">Felix</div>
-              <div className={`text-xs ${dark ? "text-white/50" : "text-slate-500"}`}>1Pacent concierge</div>
+              <div className={`text-xs ${dark ? "text-white/50" : "text-slate-500"}`}>Zaivo concierge</div>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close Felix" className="text-xl leading-none opacity-60">
               ×

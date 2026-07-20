@@ -39,6 +39,23 @@ Record each measure as **PASS / FAIL** plus a note. Any FAIL: screenshot + the t
 - [ ] FAQ accordions open/close; answers are plain-English and match the product's actual behaviour.
 - [ ] Valid join → "You're in the queue ✓". *(Until 0021 is applied: expect the error message instead — record as PASS-pending-migration.)*
 - [ ] Junk email → inline error, no submission.
+- [ ] Footer shows "© 2026 1Pacent" and a **Terms of Use** link; /terms opens and states Victoria-governed, no-liability, and the AI-may-be-incorrect disclaimer.
+
+### UC1b — Persona-aware joining (add-on, 5 min)
+
+*As each persona I'm asked for exactly what the network needs from me — no more.*
+
+1. **Tradie**: pick *I'm a tradie*. Confirm first name / surname are separate fields. In the business box, type a known company name or 11-digit ABN — if ABR is configured, pick the matched record (name + ABN fill); if not, it degrades to a plain text field. Pick two or three trades; tap suburb chips + type one custom suburb. Submit → tradie-specific confirmation.
+2. **PM**: pick *I manage properties*; choose a portfolio cohort (e.g. up to 200). Submit → PM confirmation mentioning the Deck.
+3. **Owner + landlord**: pick *I own my home*, enter your home address, tick **I'm also a landlord**, then add two rental addresses. Submit.
+4. **Landlord only**: pick *I own a rental*, add one or more properties.
+5. In the **operator console** (admin), open "Join requests (the funnel)" and confirm each lead shows its persona detail: tradie's company/ABN + trades + suburb count; PM's PUM; landlord's property count.
+
+**Measures of success**
+- [ ] The form expands to the right fields per persona and nothing else; joining stays fast.
+- [ ] Company/ABN lookup either autocompletes (ABR configured) or degrades to manual — never blocks.
+- [ ] Owner-who-is-also-a-landlord can capture home + rentals + both roles in one submission.
+- [ ] Admin funnel shows the captured persona detail per lead.
 
 ## UC2 — Tradie goes to work
 

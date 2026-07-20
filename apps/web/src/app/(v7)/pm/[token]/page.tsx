@@ -23,7 +23,7 @@ export default async function PmPortfolioPage({ params }: { params: Promise<{ to
     return (
       <div className="mx-auto max-w-md py-12 text-center">
         <h1 className="text-xl font-semibold text-slate-900">This link isn&apos;t active</h1>
-        <p className="mt-2 text-sm text-slate-600">Ask 1Pacent for a fresh portfolio link.</p>
+        <p className="mt-2 text-sm text-slate-600">Ask Zaivo for a fresh portfolio link.</p>
       </div>
     );
   }

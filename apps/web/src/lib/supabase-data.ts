@@ -2754,7 +2754,7 @@ export const supabaseData: DataSource = {
     // The hold goes through the PSP seam — simulated by default, Stripe
     // (manual capture) when STRIPE_SECRET_KEY is set. No custody either way.
     const psp = resolvePsp();
-    const auth = await psp.authorize({ amountCents: amount, requestId: req.id as string, description: `1Pacent ${playbook.title}` });
+    const auth = await psp.authorize({ amountCents: amount, requestId: req.id as string, description: `Zaivo ${playbook.title}` });
     if (!auth.ok) console.warn("[penny] authorization pending at PSP:", auth.error);
     await db.from("payments").insert({
       org_id: prop.org_id,
@@ -4411,7 +4411,7 @@ async function applyVarianceSlice(
     if (inc.ok) pspRef = primary.psp_ref;
   }
   if (!pspRef) {
-    const auth = await psp.authorize({ amountCents: deltaCents, requestId, description: `1Pacent variance ${requestId}` });
+    const auth = await psp.authorize({ amountCents: deltaCents, requestId, description: `Zaivo variance ${requestId}` });
     pspRef = auth.pspRef ?? null;
   }
   await db.from("payments").insert({
@@ -4959,7 +4959,7 @@ async function verifySettleCore(
       }
       const transferred = transferNow
         ? slice.psp_ref
-          ? await psp.transfer({ amountCents: Number(slice.amount_cents), description: `1Pacent job ${req.id}`, destination: null })
+          ? await psp.transfer({ amountCents: Number(slice.amount_cents), description: `Zaivo job ${req.id}`, destination: null })
           : { ok: psp.name === "simulated" }
         : { ok: false };
       await db
@@ -5272,12 +5272,12 @@ async function ensurePaymentPlan(
     const auth = await psp.authorize({
       amountCents: slice.amountCents,
       requestId,
-      description: `1Pacent ${req.title} (${slice.kind})`,
+      description: `Zaivo ${req.title} (${slice.kind})`,
     });
     const settleNow = slice.captureOn === "confirmation";
     if (settleNow && auth.pspRef) {
       const captured = await psp.capture(auth.pspRef);
-      if (captured.ok) await psp.transfer({ amountCents: slice.amountCents, description: `1Pacent deposit ${requestId}`, destination: null });
+      if (captured.ok) await psp.transfer({ amountCents: slice.amountCents, description: `Zaivo deposit ${requestId}`, destination: null });
     }
     await db.from("payments").insert({
       org_id: req.org_id,

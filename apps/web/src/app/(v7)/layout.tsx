@@ -13,7 +13,7 @@ export default function V7Layout({ children }: { children: React.ReactNode }) {
               1P
             </span>
             <span className="font-serif text-lg font-semibold tracking-tight text-white">
-              1Pacent <span className="text-gold-300">Passport</span>
+              Zaivo <span className="text-gold-300">Passport</span>
             </span>
           </Link>
           <nav className="flex items-center gap-5 text-sm text-brand-100">

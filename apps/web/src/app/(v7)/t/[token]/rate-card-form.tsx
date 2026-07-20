@@ -33,7 +33,7 @@ export function RateCardForm({ token, rateCard }: { token: string; rateCard: Rat
       <div className="rounded-xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-semibold text-slate-900">Base rates</h2>
         <p className="mt-1 text-xs text-slate-500">
-          These auto-populate every quote draft — from 1Pacent jobs and, once you use your own intake link,
+          These auto-populate every quote draft — from Zaivo jobs and, once you use your own intake link,
           from your own customers too.
         </p>
         <div className="mt-4 grid grid-cols-2 gap-4">

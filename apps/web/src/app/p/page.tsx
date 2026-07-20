@@ -56,7 +56,7 @@ export default function PulseHome() {
         <Panel>
           <p className="text-xs text-white/40">
             {live ? "Live network — everything you do here is real and lands on the ledger." : "Demo network — seeded data, full flows."}
-            {" "}Money is never held by 1Pacent: your card is authorized at booking and charged only when you
+            {" "}Money is never held by Zaivo: your card is authorized at booking and charged only when you
             say the job's done.
           </p>
         </Panel>

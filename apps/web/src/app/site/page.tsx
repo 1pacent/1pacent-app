@@ -206,8 +206,12 @@ export default function SitePage() {
           <p>
             Zaivo · a 1Pacent company · Melbourne, Australia
             <br />
-            Payments are processed by a licensed payment provider; we never hold client funds. Planning estimates are
-            not tax or legal advice. VIC urgent-repair provisions honoured.
+            Payments are processed by a licensed payment provider; we never hold client funds. Planning estimates and
+            AI-generated suggestions are not tax, legal or safety advice and may be incorrect. VIC urgent-repair
+            provisions honoured.
+          </p>
+          <p className="mt-3">
+            © 2026 1Pacent · <a href="/terms" className="underline hover:text-white/60">Terms of Use</a>
           </p>
         </footer>
       </div>

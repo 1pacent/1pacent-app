@@ -248,6 +248,15 @@ export default async function AdminPage() {
                         {j.suburb ? <span className="text-white/40"> · {j.suburb}</span> : null}
                       </p>
                       <p className="text-white/50">{j.email}</p>
+                      {(j.company || j.abn || j.trades?.length || j.propertyCount || j.propertiesUnderMgmt || j.serviceSuburbs?.length) && (
+                        <p className="text-[10px] text-white/40">
+                          {j.company ? `${j.company}${j.abn ? ` (ABN ${j.abn})` : ""}` : null}
+                          {j.trades?.length ? ` · ${j.trades.join(", ")}` : null}
+                          {j.serviceSuburbs?.length ? ` · serves ${j.serviceSuburbs.length} suburb${j.serviceSuburbs.length === 1 ? "" : "s"}` : null}
+                          {j.propertyCount ? ` · ${j.propertyCount} propert${j.propertyCount === 1 ? "y" : "ies"}` : null}
+                          {j.propertiesUnderMgmt ? ` · up to ${j.propertiesUnderMgmt} PUM` : null}
+                        </p>
+                      )}
                     </div>
                     <span className={j.hubspotSynced ? "text-mint-300" : "text-white/30"}>
                       {j.hubspotSynced ? "in CRM ✓" : "not synced"}

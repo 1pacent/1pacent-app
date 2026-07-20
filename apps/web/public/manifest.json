@@ -1,6 +1,6 @@
 {
-  "name": "1Pacent Pulse",
-  "short_name": "1Pacent",
+  "name": "Zaivo",
+  "short_name": "Zaivo",
   "description": "Press the button, and the job runs itself — while the address remembers everything.",
   "start_url": "/p",
   "display": "standalone",

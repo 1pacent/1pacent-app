@@ -11,7 +11,7 @@ export default function LandingPage() {
           Your rental&apos;s whole history, in one permanent record.
         </h1>
         <p className="mt-4 max-w-xl text-lg text-brand-100">
-          Every 1Pacent property gets a passport, not an account — a maintenance and compliance
+          Every Zaivo property gets a passport, not an account — a maintenance and compliance
           record that survives a change of tenant, owner, or managing agent, instead of resetting
           to zero every time one of them changes.
         </p>

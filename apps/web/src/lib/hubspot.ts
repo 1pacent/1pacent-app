@@ -20,6 +20,7 @@ export interface HubspotContactInput {
   /** Mapped to HubSpot's lifecycle + a custom-ish note via jobtitle. */
   persona?: string;
   suburb?: string | null;
+  company?: string | null;
 }
 
 export type HubspotResult = { ok: true; id: string } | { ok: false; error: string };
@@ -45,8 +46,9 @@ export async function upsertHubspotContact(input: HubspotContactInput): Promise<
     ...(input.firstName ? { firstname: input.firstName } : {}),
     ...(input.lastName ? { lastname: input.lastName } : {}),
     ...(input.phone ? { phone: input.phone } : {}),
-    ...(input.persona ? { jobtitle: `1Pacent ${input.persona}` } : {}),
+    ...(input.persona ? { jobtitle: `Zaivo ${input.persona}` } : {}),
     ...(input.suburb ? { city: input.suburb } : {}),
+    ...(input.company ? { company: input.company } : {}),
   };
   const search = await call("/crm/v3/objects/contacts/search", "POST", {
     filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: input.email }] }],
@@ -117,7 +119,7 @@ export async function recordSubscriptionDeal(input: {
     }
     const deal = await call("/crm/v3/objects/deals", "POST", {
       properties: {
-        dealname: `1Pacent PUM subscription — ${input.tier.name} (${input.propertiesUnderManagement} PUM)`,
+        dealname: `Zaivo PUM subscription — ${input.tier.name} (${input.propertiesUnderManagement} PUM)`,
         amount: String(input.tier.priceCents / 100),
         pipeline: "default",
         dealstage: "appointmentscheduled",

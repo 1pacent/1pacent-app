@@ -66,6 +66,12 @@ export interface AdminOverview {
     fullName: string;
     email: string;
     suburb: string | null;
+    company: string | null;
+    abn: string | null;
+    trades: string[] | null;
+    serviceSuburbs: string[] | null;
+    propertiesUnderMgmt: number | null;
+    propertyCount: number | null;
     hubspotSynced: boolean;
     at: string;
   }>;
@@ -95,7 +101,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
       db.from("tradie_presence").select("tradie_contact_id, online"),
       db.from("maintenance_requests").select("id, title, status, property_id, reported_at").order("reported_at", { ascending: false }).limit(500),
       db.from("payments").select("request_id, amount_cents, platform_fee_cents, fastpay_fee_cents, status, updated_at"),
-      db.from("join_requests").select("persona, full_name, email, suburb, hubspot_id, created_at").order("created_at", { ascending: false }).limit(25),
+      db.from("join_requests").select("persona, full_name, email, suburb, company_name, abn, trade_types, service_suburbs, properties_under_mgmt, properties, hubspot_id, created_at").order("created_at", { ascending: false }).limit(25),
       db.from("pm_subscriptions").select("pm_contact_id, sku, name, price_cents, property_cap, hubspot_deal_id, selected_at"),
     ]);
 
@@ -183,7 +189,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
   }
 
   const presenceRows = (presence ?? []) as Array<{ online: boolean }>;
-  const joinRows = (joins ?? []) as Array<{ persona: string; full_name: string; email: string; suburb: string | null; hubspot_id: string | null; created_at: string }>;
+  const joinRows = (joins ?? []) as Array<{ persona: string; full_name: string; email: string; suburb: string | null; company_name: string | null; abn: string | null; trade_types: string[] | null; service_suburbs: string[] | null; properties_under_mgmt: number | null; properties: unknown; hubspot_id: string | null; created_at: string }>;
 
   const subRows = (subs ?? []) as Array<{
     pm_contact_id: string;
@@ -231,6 +237,12 @@ export async function getAdminOverview(): Promise<AdminOverview> {
       fullName: j.full_name,
       email: j.email,
       suburb: j.suburb,
+      company: j.company_name,
+      abn: j.abn,
+      trades: j.trade_types,
+      serviceSuburbs: j.service_suburbs,
+      propertiesUnderMgmt: j.properties_under_mgmt,
+      propertyCount: Array.isArray(j.properties) ? j.properties.length : null,
       hubspotSynced: Boolean(j.hubspot_id),
       at: j.created_at,
     })),

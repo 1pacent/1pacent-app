@@ -329,3 +329,37 @@ filter), and the renter saw "Booked." for a job that was actually quoting.
   marketing host to a branded /soon page (early-access email:
   fixitfelix@agentmail.to). Persona links, the app host, and the admin
   console are unaffected. Flip = set/unset the env var + redeploy.
+
+## R8.3 — Zaivo rebrand, legal pages, persona-aware onboarding (2026-07-20)
+
+- **Zaivo rebrand sweep**: all user-facing "1Pacent" strings → "Zaivo"
+  (site, /p layout title, root layout, manifest name/short_name, sw.js push
+  titles, Felix widget copy + SOUL.md, v7 pages, PSP statement descriptors
+  `Zaivo …`). "1Pacent" remains only where it's the legal entity (footer
+  "a 1Pacent company", © line) and in code identifiers/package names.
+- **Terms of Use** (`/terms`, static): Victoria-governed, no-liability-
+  accepted (subject to ACL / RTA 1997), AI-may-be-incorrect disclaimer,
+  no-custody payments note. Footer now carries "© 2026 1Pacent" + a Terms
+  link (the only place it's linked); join form links it too.
+- **Persona-aware join** (migration 0028, applied live): join_requests gains
+  first_name/last_name, roles[], company_name, abn, trade_types[],
+  service_suburbs[], properties_under_mgmt, properties(jsonb). The site form
+  expands per persona:
+  - split first name / surname + mobile for everyone;
+  - renter/owner → their address (Geoscape); owner can tick "also a
+    landlord" and add rentals in the same submission (multi-role);
+  - landlord → repeatable rental-address rows;
+  - tradie → business via **ABR ABN lookup** (`lib/abr.ts` +
+    `/api/abn-lookup`, free ABR web service gated on `ABR_GUID`, degrades to
+    manual entry) + trade multiselect (core TRADE_TYPES) + service-suburb
+    chips (`suburb-chips.tsx`, tap-common-Melbourne + type-any);
+  - PM → agency via ABN lookup + portfolio cohort (20…1000 → PRD-1P-004).
+  `/api/join` validates + persists all of it; HubSpot mirror now sends
+  `company`. Admin funnel shows per-persona detail. UAT UC1b added.
+
+**Deferred/notes:** `ABR_GUID` not yet set → company lookup is manual until
+the operator registers a free GUID at abr.business.gov.au/Tools/WebServices.
+A clickable-map suburb selector was considered and deferred (needs boundary
+data + would slow onboarding; chips do the job). join_requests is still a
+lead table — turning a tradie/PM/landlord lead into live org rows + seats is
+the accounts/provisioning step (future).
