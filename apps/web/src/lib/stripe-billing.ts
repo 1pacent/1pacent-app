@@ -78,8 +78,13 @@ export async function provisionStripeTier(input: TierProvisionInput): Promise<Ti
     };
   }
   try {
+    // Ignore simulated ids from a pre-go-live push — they don't exist in real
+    // Stripe, so treat them as absent and mint fresh objects.
+    const priorProduct = input.stripeProductId?.startsWith("sim_") ? undefined : input.stripeProductId ?? undefined;
+    const priorPrice = input.stripePriceId?.startsWith("sim_") ? undefined : input.stripePriceId ?? undefined;
+
     // 1) Product — create or patch name/description.
-    let productId = input.stripeProductId ?? undefined;
+    let productId = priorProduct;
     const productParams: Record<string, string> = {
       name: input.name,
       ...(input.description ? { description: input.description } : {}),
@@ -95,7 +100,7 @@ export async function provisionStripeTier(input: TierProvisionInput): Promise<Ti
     }
 
     // 2) Price — reuse if the amount is unchanged, else mint a new one.
-    let priceId = input.stripePriceId ?? undefined;
+    let priceId = priorPrice;
     let amountUnchanged = false;
     if (priceId) {
       const existing = await stripeCall(`prices/${priceId}`, {}, "GET");
