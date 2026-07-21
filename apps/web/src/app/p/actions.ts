@@ -196,6 +196,14 @@ export async function completeJobAction(token: string, workOrderId: string, requ
   const result = await (await getData()).completeJob(token, workOrderId, note);
   if (result.ok) {
     await poke(jobTopic(requestId));
+    // Optional write-back to the PM's platform — no-op unless that connection
+    // has write-back explicitly enabled (default OFF). Fire-and-forget.
+    try {
+      const { maybeWriteBackJobOutcome } = await import("@/lib/integrations/service");
+      void maybeWriteBackJobOutcome(requestId);
+    } catch (e) {
+      console.warn("[pulse] write-back gate skipped:", e);
+    }
     // The verify moment — one tap from the lock screen releases payment.
     await pushMoment(requestId, "occupant", {
       title: "Job done — all good?",

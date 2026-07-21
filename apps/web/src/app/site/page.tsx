@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { FelixWidget } from "@/components/felix-widget";
 import { JoinForm } from "./join-form";
+import { SavingsCalculator } from "./savings-calculator";
 
 export const metadata: Metadata = {
   title: "Zaivo — press the button, the repair runs itself",
@@ -82,6 +83,7 @@ export default function SitePage() {
           </p>
           <nav className="flex gap-4 text-xs font-semibold text-white/60">
             <a href="#how" className="hover:text-white">How it works</a>
+            <a href="#managers" className="hover:text-white">Managers</a>
             <a href="#join" className="hover:text-white">Join</a>
             <a href="#faq" className="hover:text-white">FAQ</a>
           </nav>
@@ -169,6 +171,16 @@ export default function SitePage() {
               </div>
             ))}
           </div>
+        </section>
+
+        {/* PM savings calculator (self-serve selling tool) */}
+        <section id="managers" className="pt-16">
+          <h2 className="text-center font-serif text-3xl font-semibold">For property managers</h2>
+          <p className="mx-auto mb-8 mt-3 max-w-lg text-center text-sm text-white/50">
+            Your team&apos;s day is chasing quotes and chasing landlords for approval — for every job. Zaivo deletes
+            that. See what it gives back:
+          </p>
+          <SavingsCalculator />
         </section>
 
         {/* Join / onboarding */}

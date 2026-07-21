@@ -37,7 +37,10 @@ export default async function AdminPage() {
           </div>
           <div className="flex items-center gap-4">
             <a href="/admin/billing" className="text-xs font-semibold text-hivis-400 hover:text-hivis-300">
-              Billing catalogue →
+              Billing →
+            </a>
+            <a href="/admin/integrations" className="text-xs font-semibold text-hivis-400 hover:text-hivis-300">
+              Integrations →
             </a>
             <a href="/admin/logout" className="text-xs font-semibold text-white/40 hover:text-white">
               Sign out
