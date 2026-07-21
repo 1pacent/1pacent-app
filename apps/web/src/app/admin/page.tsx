@@ -35,9 +35,14 @@ export default async function AdminPage() {
               {o.dataSource === "live" ? "Live ledger" : "Demo data"} · read-only · refreshed per load
             </p>
           </div>
-          <a href="/admin/logout" className="text-xs font-semibold text-white/40 hover:text-white">
-            Sign out
-          </a>
+          <div className="flex items-center gap-4">
+            <a href="/admin/billing" className="text-xs font-semibold text-hivis-400 hover:text-hivis-300">
+              Billing catalogue →
+            </a>
+            <a href="/admin/logout" className="text-xs font-semibold text-white/40 hover:text-white">
+              Sign out
+            </a>
+          </div>
         </header>
 
         {/* Network KPIs */}

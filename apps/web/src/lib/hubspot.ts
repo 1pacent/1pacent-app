@@ -102,6 +102,76 @@ export async function listPmTiers(): Promise<PmTier[]> {
   }
 }
 
+/** Raw HubSpot product read for the catalogue prepopulate (v9 R9): name +
+ * description + price, keyed by SKU. */
+export interface HubspotProduct {
+  id: string;
+  sku: string;
+  name: string;
+  description: string | null;
+  priceCents: number;
+}
+
+export async function listHubspotProducts(): Promise<HubspotProduct[]> {
+  if (!hubspotConfigured()) return [];
+  try {
+    const res = await call("/crm/v3/objects/products?limit=100&properties=name,price,hs_sku,description", "GET");
+    const results = (res.body.results ?? []) as Array<{ id: string; properties: { name?: string; price?: string; hs_sku?: string; description?: string } }>;
+    return results
+      .filter((p) => /^PRD-1P-004-\d+$/.test(p.properties.hs_sku ?? ""))
+      .map((p) => ({
+        id: p.id,
+        sku: p.properties.hs_sku!,
+        name: (p.properties.name ?? p.properties.hs_sku!).trim(),
+        description: p.properties.description?.trim() || null,
+        priceCents: Math.round(Number(p.properties.price ?? 0) * 100),
+      }));
+  } catch (e) {
+    console.warn("[hubspot] product list failed:", e);
+    return [];
+  }
+}
+
+/** Create-or-update a HubSpot product by SKU (the CRM mirror of a tier). */
+export async function upsertHubspotProduct(input: {
+  sku: string;
+  name: string;
+  description?: string | null;
+  monthlyCents: number;
+  hubspotProductId?: string | null;
+}): Promise<{ ok: boolean; id: string | null }> {
+  if (!hubspotConfigured()) return { ok: false, id: null };
+  const properties: Record<string, string> = {
+    name: input.name,
+    hs_sku: input.sku,
+    price: String(input.monthlyCents / 100),
+    ...(input.description ? { description: input.description } : {}),
+    recurringbillingfrequency: "monthly",
+  };
+  try {
+    let id = input.hubspotProductId ?? null;
+    if (!id) {
+      // Find by SKU first (avoid duplicates).
+      const search = await call("/crm/v3/objects/products/search", "POST", {
+        filterGroups: [{ filters: [{ propertyName: "hs_sku", operator: "EQ", value: input.sku }] }],
+        properties: ["hs_sku"],
+        limit: 1,
+      });
+      const hit = ((search.body.results ?? []) as Array<{ id: string }>)[0];
+      if (hit) id = hit.id;
+    }
+    if (id) {
+      const upd = await call(`/crm/v3/objects/products/${id}`, "PATCH", { properties });
+      return { ok: upd.ok, id: upd.ok ? id : null };
+    }
+    const created = await call("/crm/v3/objects/products", "POST", { properties });
+    return { ok: created.ok, id: created.ok ? String(created.body.id) : null };
+  } catch (e) {
+    console.warn("[hubspot] product upsert failed:", e);
+    return { ok: false, id: null };
+  }
+}
+
 /** Mirror the selection as a HubSpot deal (+ line item) on the PM's contact.
  * Best-effort: local truth is the pm_subscriptions row either way. */
 export async function recordSubscriptionDeal(input: {

@@ -34,16 +34,24 @@ export function transitionPayment(from: PaymentState, event: PaymentEvent): Paym
 export interface PaymentView {
   status: PaymentState;
   amountCents: Cents;
-  /** Platform fee retained at transfer (Monetisation.md: 1.2% of volume). */
+  /** Platform/transaction fee retained at transfer (v9: 5% of volume,
+   * deducted from settled value — the customer sees one clean price, the
+   * tradie receives the remainder). Configurable via billing_settings. */
   platformFeeCents: Cents;
   tradiePayoutCents: Cents;
 }
 
-export const PLATFORM_FEE_BPS = 120; // 1.2%
+/** Default transaction fee — 5% (v9, operator-confirmed 2026-07-21). The live
+ * value is billing_settings.transaction_fee_bps; pass it into splitPayment to
+ * honour operator edits. This constant is the fallback. */
+export const PLATFORM_FEE_BPS = 500; // 5%
 
-export function splitPayment(amountCents: Cents): { platformFeeCents: Cents; tradiePayoutCents: Cents } {
+export function splitPayment(
+  amountCents: Cents,
+  feeBps: number = PLATFORM_FEE_BPS,
+): { platformFeeCents: Cents; tradiePayoutCents: Cents } {
   assertCents(amountCents);
-  const platformFeeCents = Math.round((amountCents * PLATFORM_FEE_BPS) / 10_000);
+  const platformFeeCents = Math.round((amountCents * feeBps) / 10_000);
   return { platformFeeCents, tradiePayoutCents: amountCents - platformFeeCents };
 }
 

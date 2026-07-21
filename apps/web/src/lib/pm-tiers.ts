@@ -10,6 +10,28 @@ export interface PmTier {
   hubspotProductId: string | null;
 }
 
+/** The editable tier record (v9 R9) — billing_tiers row, DB source of truth.
+ * priceCents (the monthly Stripe charge) is DERIVED: base + perProperty×cap. */
+export interface BillingTier {
+  id: string;
+  sku: string;
+  name: string;
+  description: string | null;
+  baseFeeCents: number;
+  perPropertyCents: number;
+  propertyCap: number;
+  active: boolean;
+  sortOrder: number;
+  stripeProductId: string | null;
+  stripePriceId: string | null;
+  hubspotProductId: string | null;
+}
+
+/** The monthly amount Stripe bills for a tier: base + per-property × cap. */
+export function tierMonthlyCents(t: Pick<BillingTier, "baseFeeCents" | "perPropertyCents" | "propertyCap">): number {
+  return t.baseFeeCents + t.perPropertyCents * t.propertyCap;
+}
+
 export const DEFAULT_PM_TIERS: PmTier[] = [
   { sku: "PRD-1P-004-20", name: "20 - Properties Under Management", priceCents: 4_000, propertyCap: 20, hubspotProductId: null },
   { sku: "PRD-1P-004-50", name: "50 - Properties Under Management", priceCents: 10_000, propertyCap: 50, hubspotProductId: null },

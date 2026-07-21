@@ -23,10 +23,14 @@ describe("payment plan machine (no-custody model)", () => {
 });
 
 describe("platform economics", () => {
-  it("splits 1.2% platform fee from the tradie payout", () => {
+  it("splits the 5% platform fee from the tradie payout (v9)", () => {
     const { platformFeeCents, tradiePayoutCents } = splitPayment(20_000);
+    expect(platformFeeCents).toBe(1_000);
+    expect(tradiePayoutCents).toBe(19_000);
+  });
+  it("honours a caller-supplied fee rate (billing_settings override)", () => {
+    const { platformFeeCents } = splitPayment(20_000, 120);
     expect(platformFeeCents).toBe(240);
-    expect(tradiePayoutCents).toBe(19_760);
   });
   it("books the band midpoint rounded to the dollar", () => {
     expect(bookableAmountFromBand(18_000, 24_000)).toBe(21_000);
@@ -73,16 +77,16 @@ describe("splitPaymentWithFastPay", () => {
   it("is identical to the plain split when Fast-Pay is off", () => {
     const s = splitPaymentWithFastPay(100_000, false);
     expect(s.fastPayFeeCents).toBe(0);
-    expect(s.platformFeeCents).toBe(1_200);
-    expect(s.tradiePayoutCents).toBe(98_800);
+    expect(s.platformFeeCents).toBe(5_000);
+    expect(s.tradiePayoutCents).toBe(95_000);
   });
 
   it("takes the 2% factoring fee off the tradie payout, platform fee unchanged", () => {
     const s = splitPaymentWithFastPay(100_000, true);
     expect(FASTPAY_FEE_BPS).toBe(200);
-    expect(s.platformFeeCents).toBe(1_200);
+    expect(s.platformFeeCents).toBe(5_000);
     expect(s.fastPayFeeCents).toBe(2_000);
-    expect(s.tradiePayoutCents).toBe(96_800);
+    expect(s.tradiePayoutCents).toBe(93_000);
     expect(s.platformFeeCents + s.fastPayFeeCents + s.tradiePayoutCents).toBe(100_000);
   });
 });

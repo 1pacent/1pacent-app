@@ -61,7 +61,8 @@ import {
 } from "@1pacent/core";
 import { serviceClient } from "./supabase";
 import { resolvePsp } from "./payments";
-import { listPmTiers, recordSubscriptionDeal } from "./hubspot";
+import { recordSubscriptionDeal } from "./hubspot";
+import { pmTiersFromCatalogue, getBillingSettings } from "./billing";
 import {
   buildOwnerCanvas,
   buildPmCanvas,
@@ -4143,7 +4144,7 @@ export const supabaseData: DataSource = {
     const [{ data: sub }, { count }, options] = await Promise.all([
       db.from("pm_subscriptions").select("sku, name, price_cents, property_cap, selected_at").eq("pm_contact_id", resolved.contact_id).maybeSingle(),
       db.from("properties").select("id", { count: "exact", head: true }).eq("pm_contact_id", resolved.contact_id),
-      listPmTiers(),
+      pmTiersFromCatalogue(),
     ]);
     const pum = count ?? 0;
     const current = sub
@@ -4166,7 +4167,7 @@ export const supabaseData: DataSource = {
   async selectPmSubscription(pmPortfolioToken, sku) {
     const resolved = await resolveToken(pmPortfolioToken, "pm_portfolio");
     if (!resolved?.contact_id) return { ok: false, error: "This link isn't active." };
-    const tiers = await listPmTiers();
+    const tiers = await pmTiersFromCatalogue();
     const tier = tiers.find((t) => t.sku === sku);
     if (!tier) return { ok: false, error: "Unknown subscription tier." };
     const db = serviceClient();
