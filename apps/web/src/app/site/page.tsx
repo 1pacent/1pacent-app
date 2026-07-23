@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { FelixWidget } from "@/components/felix-widget";
 import { JoinForm } from "./join-form";
 import { SavingsCalculator } from "./savings-calculator";
 
@@ -227,7 +226,6 @@ export default function SitePage() {
           </p>
         </footer>
       </div>
-      <FelixWidget theme="dark" />
     </div>
   );
 }

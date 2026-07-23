@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { FelixWidget } from "@/components/felix-widget";
 
 export const metadata: Metadata = {
   title: "Zaivo",
@@ -21,7 +20,6 @@ export default function PulseLayout({ children }: { children: React.ReactNode })
   return (
     <div className="min-h-dvh bg-field-950 text-white" style={{ colorScheme: "dark" }}>
       <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-4 pb-8">{children}</div>
-      <FelixWidget theme="dark" />
     </div>
   );
 }
